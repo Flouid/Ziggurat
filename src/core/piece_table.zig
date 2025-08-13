@@ -68,10 +68,9 @@ const PieceTable = struct {
         const add_offset = self.add.items.len;
         try self.add.appendSlice(text);
         
-
         // case for empty doc
         if (self.pieces.items.len == 0) {
-            try self.pieces.append(.{ .buf = .Add, .off = add_offset, .len = text.len });
+            try self.pieces.append(.{ .buf = .Add, .off = 0, .len = text.len });
             try self.prefix.append(0);
             self.doc_len += text.len;
             return;
@@ -150,12 +149,12 @@ const PieceTable = struct {
         // case 2: deletion spans multiple pieces
         else {
             var remain = count;
-            // first handle the current piece
+            // lucky edge case: deletion lines up with current piece start
             if (len_prefix == 0) {
                 remain -= old.len;
                 _ = self.pieces.orderedRemove(idx);
-            }
-            else {
+            // general case: some prefix is left over, modify the current piece in-place
+            } else {
                 remain -= old.len - len_prefix;
                 old.len = len_prefix;
                 idx += 1;
