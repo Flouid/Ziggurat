@@ -4,8 +4,15 @@ const traits = @import("traits");
 
 // The piece-table implementation for storing edits to a document efficiently in memory.
 // There are two distinct but highly coupled data structures implemented here.
-// Top-level is a piece table, but storing pieces in an array is SLOW! (O(n) edits in general case)
-// Pieces are stored in a rope implemented as a b-tree. Now edits are O(log base MAX_BRANCH n) + O(MAX_PIECES).
+// Top-level is a piece table, but storing pieces in an array is SLOW! O(P)
+// Pieces are stored in a rope implemented as a b-tree. 
+// With P = # pieces:
+//   Locate index -> leaf:  O(log_{MIN_BRANCH} P)
+//   Point edit (insert/delete at one index):
+//     - Leaf mutation:     O(MAX_PIECES)
+//     - Rebalance path:    O(log_{MIN_BRANCH} P * MAX_BRANCH)
+//     => Overall:          O(log_{MIN_BRANCH} P) with small constants
+//   Range edit spanning t pieces: O(log_{MIN_BRANCH} P + t)
 
 const Piece = struct {
     // one entry in the piece table.
@@ -23,7 +30,9 @@ const Piece = struct {
 // -------------------- ROPE IMPLEMENTATION --------------------
 
 const MAX_BRANCH = 64;
+const MIN_BRANCH = MAX_BRANCH / 2;
 const MAX_PIECES = 64;
+const MIN_PIECES = MAX_PIECES / 2;
 const MAX_ITER = 1_000;
 
 const Node = struct {
@@ -54,6 +63,8 @@ const InLeaf = struct {
     piece_idx: usize,
     offset: usize,
 };
+
+// memory management: allocation and deallocation
 
 fn initLeaf(alloc: std.mem.Allocator) error{OutOfMemory}!*Node {
     const node = try alloc.create(Node);
@@ -91,6 +102,8 @@ fn freeTree(alloc: std.mem.Allocator, node: *Node) void {
     alloc.destroy(node);
 }
 
+// safe helper methods, good for debugging and provide readable aliases
+
 inline fn leafPieces(leaf: *Node) *std.ArrayList(Piece) {
     debug.dassert(std.meta.activeTag(leaf.children) == .leaf, "expected leaf node");
     return &leaf.children.leaf;
@@ -111,33 +124,7 @@ inline fn childListConst(internal: *const Node) *const std.ArrayList(*Node) {
     return &internal.children.internal;
 }
 
-fn recomputeWeight(node: *Node) void {
-    // recompute the sum for any node, then propagate the difference up it's parents
-    var sum: usize = 0;
-    switch (node.children) {
-        .leaf => |*pieces| { for (pieces.items) |piece| sum += piece.len; },
-        .internal => |*children| { for (children.items) |child| sum += child.weight_bytes; },
-    }
-    // no propagation needed if sum is unchanged
-    if (sum == node.weight_bytes) return;
-
-    var cur = node.parent;
-    if (sum > node.weight_bytes) {
-        const inc = sum - node.weight_bytes;
-        while (cur) |n| {
-            n.weight_bytes += inc;
-            cur = n.parent;
-        }
-    } else {
-        const dec = node.weight_bytes - sum;
-        while (cur) |n| {
-            debug.dassert(n.weight_bytes >= dec, "cannot give a node a negative weight");
-            n.weight_bytes -= dec;
-            cur = n.parent;
-        }
-    }
-    node.weight_bytes = sum;
-}
+// navigation within a document and within a leaf
 
 fn findAt(root: *Node, at: usize) Found {
     var node = root;
@@ -176,6 +163,8 @@ fn locateInLeaf(leaf: *const Node, offset: usize) InLeaf {
     return .{ .piece_idx = pieces.items.len, .offset = 0 };
 }
 
+// merging
+
 fn canMerge(leaf: *const Node, a: usize, b: usize) bool {
     // given an index to a "left" and "right" piece, see if they are contiguous and from the same buffer
     const pieces = leafPiecesConst(leaf);
@@ -202,6 +191,8 @@ fn mergeAround(leaf: *Node, idx: usize) void {
     if (i + 1 < pieces.items.len and canMerge(leaf, i, i+1)) merge(leaf, i, i+1);
 }
 
+// helpers for editing nodes
+
 fn fastAppendIfPossible(leaf: *Node, add_off: usize, add_len: usize, at: usize, doc_len: usize) bool {
     // happy path, appending to the end of the add buffer
     if (at != doc_len) return false;
@@ -221,13 +212,13 @@ fn spliceIntoLeaf(pieces: *std.ArrayList(Piece), loc: InLeaf, add_off: usize, ad
     const new_piece = Piece{ .buf = .Add, .off = add_off, .len = add_len };
     if (loc.piece_idx < pieces.items.len) {
         const old = pieces.items[loc.piece_idx];
-        const len_posfix = old.len - loc.offset;
+        const len_suffix = old.len - loc.offset;
 
         var buf: [3]Piece = undefined;
         var n: usize = 0;
         if (loc.offset != 0) { buf[n] = old; buf[n].len = loc.offset; n += 1; }
         buf[n] = new_piece; n += 1;
-        if (len_posfix != 0) { buf[n] = old; buf[n].off += loc.offset; buf[n].len = len_posfix; n += 1; }
+        if (len_suffix != 0) { buf[n] = old; buf[n].off += loc.offset; buf[n].len = len_suffix; n += 1; }
 
         pieces.items[loc.piece_idx] = buf[0];
         if (n >= 2) try pieces.insertSlice(loc.piece_idx + 1, buf[1..n]);
@@ -236,6 +227,91 @@ fn spliceIntoLeaf(pieces: *std.ArrayList(Piece), loc: InLeaf, add_off: usize, ad
         try pieces.append(new_piece);
         return pieces.items.len - 1;
     }
+}
+
+fn deleteFromLeaf(leaf: *Node, start: InLeaf, max_remove: usize) error{OutOfMemory}!usize {
+    // attempt to delete at most max_remove bytes from the current leaf.
+    // return the total number that could be deleted, deletion may go into another node.
+    const pieces = leafPieces(leaf);
+    var removed: usize = 0;
+    var piece_idx = start.piece_idx;
+    const prefix_len = start.offset;
+    if (piece_idx >= pieces.items.len) return 0;
+
+    // handle the current (first) piece
+    var piece = &pieces.items[piece_idx];
+    var take = @min(max_remove, piece.len - prefix_len);
+    // lucky case: delete the whole piece
+    if (prefix_len == 0 and take == piece.len) { _ = pieces.orderedRemove(piece_idx); }
+    // general case, we may need to create a new suffix piece
+    else {
+        const suffix_len = piece.len - prefix_len - take;
+        // delete the middle of the piece
+        if (prefix_len > 0 and suffix_len > 0) {
+            piece.len = prefix_len;
+            var suffix = piece.*;
+            suffix.off += prefix_len + take;
+            suffix.len = suffix_len;
+            try pieces.insert(piece_idx + 1, suffix);
+            piece_idx += 1;
+        // there is no suffix, just trim the current piece
+        } else if (prefix_len > 0) { piece.len = prefix_len; piece_idx += 1; }
+        // there is no prefix, but the entire piece wasn't removed
+        else { piece.off += take; piece.len = suffix_len; }
+    }
+    removed += take;
+
+    // if applicable, remove entire middle pieces
+    while (piece_idx < pieces.items.len and removed < max_remove) {
+        piece = &pieces.items[piece_idx];
+        if (piece.len <= (max_remove - removed)) {
+            removed += piece.len;
+            _ = pieces.orderedRemove(piece_idx);
+        } else break;
+    }
+
+    // we may still need to remove the front of one final piece
+    if (piece_idx < pieces.items.len and removed < max_remove) {
+        piece = &pieces.items[piece_idx];
+        take = max_remove - removed;
+        piece.off += take;
+        piece.len -= take;
+        removed += take;
+    }
+
+    // if there are still pieces left, perform a local coalesce before returning
+    if (pieces.items.len == 0) return removed;
+    if (piece_idx == pieces.items.len) piece_idx -= 1;
+    mergeAround(leaf, piece_idx);
+    return removed;
+}
+
+fn recomputeWeight(node: *Node) void {
+    // recompute the sum for any node, then propagate the difference up it's parents
+    var sum: usize = 0;
+    switch (node.children) {
+        .leaf => |*pieces| { for (pieces.items) |piece| sum += piece.len; },
+        .internal => |*children| { for (children.items) |child| sum += child.weight_bytes; },
+    }
+    // no propagation needed if sum is unchanged
+    if (sum == node.weight_bytes) return;
+
+    var cur = node.parent;
+    if (sum > node.weight_bytes) {
+        const inc = sum - node.weight_bytes;
+        while (cur) |n| {
+            n.weight_bytes += inc;
+            cur = n.parent;
+        }
+    } else {
+        const dec = node.weight_bytes - sum;
+        while (cur) |n| {
+            debug.dassert(n.weight_bytes >= dec, "cannot give a node a negative weight");
+            n.weight_bytes -= dec;
+            cur = n.parent;
+        }
+    }
+    node.weight_bytes = sum;
 }
 
 // -------------------- PIECE TABLE IMPLEMENTATION --------------------
@@ -298,11 +374,37 @@ const PieceTable = struct {
         self.doc_len += text.len;
     }
 
-    // delete
+    pub fn delete(self: *PieceTable, at: usize, len: usize) error{OutOfMemory}!void {
+        debug.dassert(at + len <= self.doc_len, "cannot delete outside of document");
+        debug.dassert(len > 0, "cannot delete empty span");
+
+        var remaining = len;
+        while (remaining > 0) {
+            const found = findAt(self.root, at);
+            const leaf = found.leaf;
+            const in_leaf = locateInLeaf(leaf, found.offset);
+
+            // try to remove as much as possible within this leaf
+            const removed = try deleteFromLeaf(leaf, in_leaf, remaining);
+            recomputeWeight(leaf);
+            // TODO: repair tree
+            remaining -= removed;
+        }
+        self.doc_len -= len;
+    }
 
     pub fn writeWith(self: *PieceTable, w: anytype) @TypeOf(w).Error!void {
         traits.ensureHasMethod(w, "writeAll");
         try self.writeSubtree(w, self.root);
+    }
+
+    // -------------------- WRITE HELPERS --------------------
+
+    fn writeSubtree(self: *PieceTable, w: anytype, node: *const Node) @TypeOf(w).Error!void {
+        switch (node.children) {
+            .leaf => try self.writeLeaf(w, node),
+            .internal => |*children| try self.writeChildren(w, children.items, 0)
+        }
     }
 
     fn writeLeaf(self: *PieceTable, w: anytype, leaf: *const Node) @TypeOf(w).Error!void {
@@ -319,19 +421,56 @@ const PieceTable = struct {
         }
     }
 
-    fn writeSubtree(self: *PieceTable, w: anytype, node: *const Node) @TypeOf(w).Error!void {
-        switch (node.children) {
-            .leaf => try self.writeLeaf(w, node),
-            .internal => |*children| try self.writeChildren(w, children.items, 0)
-        }
-    }
-
     fn writeChildren(self: *PieceTable, w: anytype, children: []const *Node, idx: usize) @TypeOf(w).Error!void {
         if (idx >= children.len) return;
         // traverse deeper on leftmost node
         try self.writeSubtree(w, children[idx]);
         // traverse left to right inside this branch
         return self.writeChildren(w, children, idx + 1);
+    }
+
+    // -------------------- INSERT HELPERS --------------------
+
+    fn bubbleOverflowUp(self: *PieceTable, start: *Node) error{OutOfMemory}!void {
+        // It's possible that a node split overflows it's parent, which splits and overflows IT'S parent...
+        // Thus the logic needs to "bubble up" from the bottom of the tree until splits stop happening
+        var cur: ?*Node = start;
+        while (cur) |n| {
+            const parent = try self.splitNodeIfOverflow(n);
+            if (parent == null) return;
+            cur = parent;
+        }
+    }
+
+    fn splitNodeIfOverflow(self: *PieceTable, node: *Node) error{OutOfMemory}!?*Node {
+        // this function will look at ANY node and perform the following logic:
+        //  1. if this node has less than the maximum number of children, do nothing
+        //  2. if it DOES have less than the max, split it in half into a new node
+        //  3. if it has a parent, it adds the new node as a sibling AND RETURNS IT
+        //  4. if it doesn't have a parent, it creates a new internal node as root
+        // if this function returns a non-null value, then parents must also be checked for overflow.
+        // is agnostic to leaf/internal nodes, but the implementations are fairly different.
+        switch (node.children) {
+            .leaf => |*pieces| {
+                if (pieces.items.len <= MAX_PIECES) return null;
+                // split half of the pieces into a new sibling
+                const mid = pieces.items.len / 2;
+                const right = try initLeaf(self.alloc);
+                try leafPieces(right).appendSlice(pieces.items[mid..]);
+                pieces.shrinkRetainingCapacity(mid);
+                return self.spliceNodeInTree(node, right);
+            },
+            .internal => |*children| {
+                if (children.items.len <= MAX_BRANCH) return null;
+                const mid = children.items.len / 2;
+                const right = try initInternal(self.alloc);
+                try childList(right).appendSlice(children.items[mid..]);
+                children.shrinkRetainingCapacity(mid);
+                // fix parent pointer for moved children
+                for (childList(right).items) |child| child.parent = right;
+                return self.spliceNodeInTree(node, right);
+            }
+        }
     }
 
     fn spliceNodeInTree(self: *PieceTable, old: *Node, new: *Node) error{OutOfMemory}!?*Node {
@@ -364,49 +503,12 @@ const PieceTable = struct {
         }
     }
 
-    fn splitNodeIfOverflow(self: *PieceTable, node: *Node) error{OutOfMemory}!?*Node {
-        // this function will look at ANY node and perform the following logic:
-        //  1. if this node has less than the maximum number of children, do nothing
-        //  2. if it DOES have less than the max, split it in half into a new node
-        //  3. if it has a parent, it adds the new node as a sibling AND RETURNS IT
-        //  4. if it doesn't have a parent, it creates a new internal node as root
-        // if this function returns a non-null value, then parents must also be checked for overflow.
-        // is agnostic to leaf/internal nodes, but the implementations are fairly different.
-        switch (node.children) {
-            .leaf => |*pieces| {
-                if (pieces.items.len <= MAX_PIECES) return null;
-                // split half of the pieces into a new sibling
-                const mid = pieces.items.len >> 1;
-                const right = try initLeaf(self.alloc);
-                try leafPieces(right).appendSlice(pieces.items[mid..]);
-                pieces.shrinkRetainingCapacity(mid);
-                return self.spliceNodeInTree(node, right);
-            },
-            .internal => |*children| {
-                if (children.items.len <= MAX_BRANCH) return null;
-                const mid = children.items.len >> 1;
-                const right = try initInternal(self.alloc);
-                try childList(right).appendSlice(children.items[mid..]);
-                children.shrinkRetainingCapacity(mid);
-                // fix parent pointer for moved children
-                for (childList(right).items) |child| child.parent = right;
-                return self.spliceNodeInTree(node, right);
-            }
-        }
+    // -------------------- DELETE HELPERS --------------------
 
-    }
 
-    fn bubbleOverflowUp(self: *PieceTable, start: *Node) error{OutOfMemory}!void {
-        // It's possible that a node split overflows it's parent, which splits and overflows IT'S parent...
-        // Thus the logic needs to "bubble up" from the bottom of the tree until splits stop happening
-        var cur: ?*Node = start;
-        while (cur) |n| {
-            const parent = try self.splitNodeIfOverflow(n);
-            if (parent == null) return;
-            cur = parent;
-        }
-    }
-}; 
+};
+
+// -------------------- TESTING --------------------
 
 test "compiles?" {
     const alloc = std.testing.allocator;
@@ -452,26 +554,26 @@ test "insert: empty, start, middle, end, fast path" {
     try std.testing.expect(std.mem.eql(u8, ">>> hello, world", out.items));
 }
 
-// test "delete: single-piece middle" {
-//     const alloc = std.testing.allocator;
-//     var pt = try PieceTable.init(alloc, "hello world");
-//     defer pt.deinit();
+test "delete: single-piece middle" {
+    const alloc = std.testing.allocator;
+    var pt = try PieceTable.init(alloc, "hello world");
+    defer pt.deinit();
 
-//     try pt.delete(3, 4); // remove "lo w"
-//     var out = std.ArrayList(u8).init(alloc);
-//     defer out.deinit();
-//     try pt.writeWith(out.writer());
-//     try std.testing.expect(std.mem.eql(u8, "helorld", out.items));
-// }
+    try pt.delete(3, 4); // remove "lo w"
+    var out = std.ArrayList(u8).init(alloc);
+    defer out.deinit();
+    try pt.writeWith(out.writer());
+    try std.testing.expect(std.mem.eql(u8, "helorld", out.items));
+}
 
-// test "delete: spans pieces and merges" {
-//     const alloc = std.testing.allocator;
-//     var pt = try PieceTable.init(alloc, "abcXYZ");
-//     defer pt.deinit();
-//     try pt.insert(3, "123"); // abc123XYZ  (pieces: Original[a..c], Add[123], Original[XYZ])
-//     try pt.delete(2, 4);     // delete "c123" -> "abXYZ"
-//     var out = std.ArrayList(u8).init(alloc);
-//     defer out.deinit();
-//     try pt.writeWith(out.writer());
-//     try std.testing.expect(std.mem.eql(u8, "abXYZ", out.items));
-// }
+test "delete: spans pieces and merges" {
+    const alloc = std.testing.allocator;
+    var pt = try PieceTable.init(alloc, "abcXYZ");
+    defer pt.deinit();
+    try pt.insert(3, "123"); // abc123XYZ  (pieces: Original[a..c], Add[123], Original[XYZ])
+    try pt.delete(2, 4);     // delete "c123" -> "abXYZ"
+    var out = std.ArrayList(u8).init(alloc);
+    defer out.deinit();
+    try pt.writeWith(out.writer());
+    try std.testing.expect(std.mem.eql(u8, "abXYZ", out.items));
+}
