@@ -1,6 +1,7 @@
 const std = @import("std");
 const debug = @import("debug");
 const traits = @import("traits");
+const utils = @import("utils");
 
 // The piece-table implementation for storing edits to a document efficiently in memory.
 // There are two distinct but highly coupled data structures implemented here.
@@ -93,7 +94,7 @@ fn initInternal(alloc: std.mem.Allocator) error{OutOfMemory}!*Node {
 fn freeTree(alloc: std.mem.Allocator, node: *Node) void {
     // recursive function to free all children of a given node
     switch (node.children) {
-        .leaf => |*pieces| { pieces.deinit(); },
+        .leaf     => |*pieces| { pieces.deinit(); },
         .internal => |*children| { 
             for (children.items) |child| freeTree(alloc, child);
             children.deinit();
@@ -102,7 +103,17 @@ fn freeTree(alloc: std.mem.Allocator, node: *Node) void {
     alloc.destroy(node);
 }
 
-// safe helper methods, good for debugging and provide readable aliases
+fn freeNode(alloc: std.mem.Allocator, node: *Node) void {
+    // non-recursive function to free any single node
+    debug.dassert(nodeCount(node) == 0, "cannot non-recursively free node with children");
+    switch (node.children) {
+        .leaf     => |*pieces| pieces.deinit(),
+        .internal => |*chilren| chilren.deinit(),
+    }
+    alloc.destroy(node);
+}
+
+// inline helper methods, good for debugging and provide readable aliases
 
 inline fn leafPieces(leaf: *Node) *std.ArrayList(Piece) {
     debug.dassert(std.meta.activeTag(leaf.children) == .leaf, "expected leaf node");
@@ -124,6 +135,31 @@ inline fn childListConst(internal: *const Node) *const std.ArrayList(*Node) {
     return &internal.children.internal;
 }
 
+inline fn isLeaf(node: *const Node) bool {
+    return std.meta.activeTag(node.children) == .leaf;
+}
+
+inline fn nodeCount(node: *const Node) usize {
+    return switch (node.children) {
+        .leaf     => |*pieces| pieces.items.len,
+        .internal => |*children| children.items.len
+    };
+}
+
+inline fn nodeMin(node: *const Node) usize {
+    return if (isLeaf(node)) MIN_PIECES else MIN_BRANCH;
+}
+
+inline fn nodeMax(node: *const Node) usize {
+    return if (isLeaf(node)) MAX_PIECES else MAX_BRANCH;
+}
+
+inline fn spareNodes(node: *Node) usize {
+    const count = nodeCount(node);
+    const min = nodeMin(node);
+    return if (count > min) count - min else 0;
+}
+
 // navigation within a document and within a leaf
 
 fn findAt(root: *Node, at: usize) Found {
@@ -136,12 +172,13 @@ fn findAt(root: *Node, at: usize) Found {
             .leaf => return .{ .leaf = node, .offset = idx},
             // otherwise, iterate through children
             .internal => |*children| {
+                debug.dassert(children.items.len > 0, "internal node must have at least one child");
                 var i: usize = 0;
                 // cumulatively subtract node weights from the index, we want an OFFSET
                 while (i < children.items.len and idx >= children.items[i].weight_bytes) : (i += 1) {
                     idx -= children.items[i].weight_bytes;
                 }
-                // if the node walked to the very end, a small manual adjustment is needed
+                // if the node walked to the very end, a small manual adjustment is needed for consistency
                 if (i == children.items.len) { i -= 1; idx = children.items[i].weight_bytes; }
                 // children.items[i].weight_bytes <= idx < children.items[i+1].weight_bytes
                 node = children.items[i];
@@ -160,7 +197,32 @@ fn locateInLeaf(leaf: *const Node, offset: usize) InLeaf {
         if (offset < acc + piece.len) return .{ .piece_idx = idx, .offset = offset - acc };
         acc += piece.len;
     }
+    // return a sentinel to the end of the pieces array
     return .{ .piece_idx = pieces.items.len, .offset = 0 };
+}
+
+// navigation within the tree structure
+
+const Siblings = struct { l: ?*Node, r: ?*Node };
+
+fn indexOfChild(parent: *const Node, child: *const Node) usize {
+    const children = childListConst(parent);
+    var idx: usize = 0;
+    while (idx < children.items.len and children.items[idx] != child) : (idx += 1) {}
+    debug.dassert(idx < children.items.len, "child not found under parent");
+    return idx;
+}
+
+fn getSiblings(child: *const Node) Siblings {
+    if (child.parent) |parent| {
+        const siblings = childListConst(parent);
+        const idx = indexOfChild(parent, child);
+        return .{
+            .l = if (idx > 0) siblings.items[idx-1] else null,
+            .r = if (idx + 1 < siblings.items.len) siblings.items[idx+1] else null
+        };
+    }
+    return .{ .l = null, .r = null };
 }
 
 // merging
@@ -208,7 +270,8 @@ fn fastAppendIfPossible(leaf: *Node, add_off: usize, add_len: usize, at: usize, 
 }
 
 fn spliceIntoLeaf(pieces: *std.ArrayList(Piece), loc: InLeaf, add_off: usize, add_len: usize) error{OutOfMemory}!usize {
-    // generic path, build 1-3 replacement pieces and insert them into the piece table
+    // generic path, build 1-3 replacement pieces and insert them into the piece table.
+    // The return is the index of the newly inserted piece
     const new_piece = Piece{ .buf = .Add, .off = add_off, .len = add_len };
     if (loc.piece_idx < pieces.items.len) {
         const old = pieces.items[loc.piece_idx];
@@ -314,6 +377,89 @@ fn recomputeWeight(node: *Node) void {
     node.weight_bytes = sum;
 }
 
+fn transferRangeBetweenSiblings(src: *Node, dst: *Node, start: usize, count: usize, side: enum{Front, Back}) error{OutOfMemory}!void {
+    debug.dassert(count > 0, "cannot transfer 0 nodes between siblings");
+    debug.dassert(std.meta.activeTag(src.children) == std.meta.activeTag(dst.children), "source and destination must be the same type of node");
+    debug.dassert(start == 0 or start + count == nodeCount(src), "insertions must be contiguous with start or end of source");
+    switch (src.children) {
+        .leaf => {
+            const src_pieces = leafPieces(src);
+            const dst_pieces = leafPieces(dst);
+            debug.dassert(src_pieces.items.len >= count, "source must contain enough items to transfer");
+            debug.dassert(dst_pieces.items.len > 0, "destination must not start empty");
+            const to_move = src_pieces.items[start..start + count];
+            switch (side) {
+                .Front => try dst_pieces.insertSlice(0, to_move),
+                .Back  => try dst_pieces.appendSlice(to_move),
+            }
+            _ = utils.orderedRemoveRange(Piece, src_pieces, start, count);
+            // check for new merge opportunities
+            const center: usize = switch (side) {
+                .Front => count,
+                .Back  => dst_pieces.items.len - count
+            };
+            mergeAround(dst, center);
+        },
+        .internal => {
+            const src_children = childList(src);
+            const dst_children = childList(dst);
+            debug.dassert(src_children.items.len >= count, "source must contain enough items to transfer");
+            debug.dassert(dst_children.items.len > 0, "destination must not start empty");
+            const to_move = src_children.items[start..start + count];
+            switch (side) {
+                .Front => try dst_children.insertSlice(0, to_move),
+                .Back  => try dst_children.appendSlice(to_move),
+            }
+            _ = utils.orderedRemoveRange(*Node, src_children, start, count);
+            // fix parent pointers for moved children
+            const adopted = switch (side) {
+                .Front => dst_children.items[0..count],
+                .Back  => dst_children.items[dst_children.items.len - count..]
+            };
+            for (adopted) |child| child.parent = dst;
+        }
+    }
+    recomputeWeight(src);
+    recomputeWeight(dst);
+}
+
+const BorrowPlan = struct { take_left: usize, take_right: usize };
+
+fn planBorrow(node: *Node, siblings: Siblings) BorrowPlan {
+    // determines exactly how many children a node wants to borrow, and how many to take from each sibling
+    const count = nodeCount(node);
+    const min = nodeMin(node);
+    const max = nodeMax(node);
+    if (count >= min) return .{ .take_left = 0, .take_right = 0 };
+    const demand = min - count;
+    const capacity = max - count;
+    const left_spare = if (siblings.l) |l| spareNodes(l) else 0;
+    const right_spare = if (siblings.r) |r| spareNodes(r) else 0;
+    // merge on new boundaries after borrowing might delete up to one piece per borrow
+    const slack: usize = if (isLeaf(node)) (@intFromBool(siblings.l != null) + @intFromBool(siblings.r != null)) else 0;
+    var total_want = @min(demand + slack, capacity);
+    const take_left = @min(total_want, left_spare);
+    total_want -= take_left;
+    const take_right = @min(total_want, right_spare);
+    return .{ .take_left = take_left, .take_right = take_right };
+}
+
+fn tryBorrow(node: *Node, siblings: Siblings) error{OutOfMemory}!usize {
+    // uses a borrow plan to take exactly as many nodes from neighbors as can be spared
+    const plan = planBorrow(node, siblings);
+    if (siblings.l) |left| {
+        if (plan.take_left > 0) { 
+            try transferRangeBetweenSiblings(left, node, nodeCount(left) - plan.take_left, plan.take_left, .Front);
+        }
+    }
+    if (siblings.r) |right| {
+        if (plan.take_right > 0) {
+            try transferRangeBetweenSiblings(right, node, 0, plan.take_right, .Back);
+        }
+    }
+    return plan.take_left + plan.take_right;
+}
+
 // -------------------- PIECE TABLE IMPLEMENTATION --------------------
 
 const PieceTable = struct {
@@ -386,8 +532,7 @@ const PieceTable = struct {
 
             // try to remove as much as possible within this leaf
             const removed = try deleteFromLeaf(leaf, in_leaf, remaining);
-            recomputeWeight(leaf);
-            // TODO: repair tree
+            try self.repairAfterDelete(leaf);
             remaining -= removed;
         }
         self.doc_len -= len;
@@ -482,9 +627,7 @@ const PieceTable = struct {
         // general case, add the new node one to the right of the old
         if (old.parent) |parent| {
             const siblings = childList(parent);
-            var idx: usize = 0;
-            while (siblings.items[idx] != old) : (idx += 1) {}
-            debug.dassert(idx < siblings.items.len, "left child not found under parent");
+            const idx = indexOfChild(parent, old);
             try siblings.insert(idx + 1, new);
             new.parent = parent;
             recomputeWeight(new);
@@ -505,7 +648,77 @@ const PieceTable = struct {
 
     // -------------------- DELETE HELPERS --------------------
 
+    fn repairAfterDelete(self: *PieceTable, start: *Node) error{OutOfMemory}!void {
+        var cur: ?*Node = start;
+        while (cur) |node| {
+            // always start the process with valid weights
+            recomputeWeight(node);
+            // at the top of the tree, check for root collapse and return
+            if (node.parent == null) { try self.tryCollapseRoot(); return; }
+            // make next decisions based on how many children this node has
+            const count = nodeCount(node);
+            if (count == 0) {
+                const parent = node.parent.?;
+                self.infanticide(parent, node);
+                cur = parent;
+            } else if (count < nodeMin(node)) {
+                // the node has less than the minimum amount of children, try and steal some
+                const demand = nodeMin(node) - count;
+                const siblings = getSiblings(node);
+                const borrowed = try tryBorrow(node, siblings);
+                // it is possible to borrow more nodes than were missing, if it allowed new merges
+                if (borrowed >= demand) return;
+                // attempt to merge with neighbors
+                if (siblings.l) |left| {
+                    if (try self.mergeWithSibling(node, left)) |parent| { cur = parent; continue; }
+                }
+                if (siblings.r) |right| {
+                    if (try self.mergeWithSibling(right, node)) |parent| { cur = parent; continue; }
+                }
+            }
+            // if we're here, we're either happy or we couldn't borrow or merge our way to happiness.
+            // There may just not be enough nodes yet, but regardless we decide to tolerate it
+            return;
+        }
+    }
 
+    fn tryCollapseRoot(self: *PieceTable) error{OutOfMemory}!void {
+        // checks for cases where the root node is no longer needed and collapses if necessary
+        switch (self.root.children) {
+            .leaf => {},
+            .internal => |*children| {
+                if (children.items.len == 0) {
+                    // internal node with no children becomes a leaf
+                    const leaf = try initLeaf(self.alloc);
+                    freeNode(self.alloc, self.root);
+                    self.root = leaf;
+                } else if (children.items.len == 1) {
+                    // internal node with one child is replaced by that child
+                    const child = children.items[0];
+                    child.parent = null;
+                    freeNode(self.alloc, self.root);
+                    self.root = child;
+                }
+            }
+        }
+    }
+
+    fn infanticide(self: *PieceTable, parent: *Node, child: *Node) void {
+        // metal
+        const siblings = childList(parent);
+        const idx = indexOfChild(parent, child);
+        _ = siblings.orderedRemove(idx);
+        freeTree(self.alloc, child);
+    }
+
+    fn mergeWithSibling(self: *PieceTable, src: *Node, dst: *Node) error{OutOfMemory}!?*Node {
+        if (nodeCount(src) + nodeCount(dst) > nodeMax(dst)) return null;
+        try transferRangeBetweenSiblings(src, dst, 0, nodeCount(src), .Back);
+        const parent = src.parent.?;
+        self.infanticide(parent, src);
+        recomputeWeight(parent);
+        return parent;
+    }
 };
 
 // -------------------- TESTING --------------------

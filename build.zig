@@ -29,6 +29,11 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/utils/traits.zig"),
         .target = target
     });
+    const utils_mod = b.addModule("utils", .{
+        .root_source_file = b.path("src/utils/utils.zig"),
+        .target = target
+    });
+    utils_mod.addImport("debug", debug_mod);
 
     // This creates a module, which represents a collection of source files alongside
     // some compilation options, such as optimization mode and linked system libraries.
@@ -51,6 +56,7 @@ pub fn build(b: *std.Build) void {
     });
     mod.addImport("debug", debug_mod);
     mod.addImport("traits", traits_mod);
+    mod.addImport("utils", utils_mod);
 
     // Here we define an executable. An executable needs to have a root module
     // which needs to expose a `main` function. While we could add a main function
