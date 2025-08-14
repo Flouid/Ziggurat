@@ -49,7 +49,7 @@ const Found = struct {
 
 const InLeaf = struct {
     // for local navigation inside of a leaf.
-    // when looking for the specific piece that contains in index, this is what's returned:
+    // when looking for the specific piece that contains an index, this is what's returned:
     // An index into that leaf node's pieces array, and the offset within that piece.
     piece_idx: usize,
     offset: usize,
@@ -243,11 +243,7 @@ fn spliceIntoLeaf(pieces: *std.ArrayList(Piece), loc: InLeaf, add_off: usize, ad
 const PieceTable = struct {
     // piece table collection object.
     // holds a pointer to the original document as well as a working append-only buffer.
-    // holds a collection of ordered "pieces" which describe how to build a final document 
-    // using the two buffers.
-    // Some scheme for efficiently mapping indices into the piece table is required.
-    // current implementation maintains and uses a prefix sum and searches it in O(log n) time.
-    // However, since the pieces are stored in array, insertions and deletions are O(n).
+    // holds a collection of ordered "pieces" which describe how to build a final document using the two buffers.
     original: []const u8,
     add: std.ArrayList(u8),
     root: *Node,
@@ -255,21 +251,19 @@ const PieceTable = struct {
     alloc: std.mem.Allocator,
 
     pub fn init(alloc: std.mem.Allocator, original: []const u8) error{OutOfMemory}!PieceTable {
-        var table = PieceTable{
-            .original = original,
-            .add = std.ArrayList(u8).init(alloc),
-            .root = undefined,
-            .doc_len = original.len,
-            .alloc = alloc,
-        };
         // initialize the root of the tree
         const leaf = try initLeaf(alloc);
         if (original.len != 0) {
             try leafPieces(leaf).append(.{ .buf = .Original, .off = 0, .len = original.len });
             leaf.weight_bytes = original.len;
         }
-        table.root = leaf;
-        return table;
+        return PieceTable{
+            .original = original,
+            .add = std.ArrayList(u8).init(alloc),
+            .root = leaf,
+            .doc_len = original.len,
+            .alloc = alloc,
+        };
     }
     
     pub fn deinit(self: *PieceTable) void {
