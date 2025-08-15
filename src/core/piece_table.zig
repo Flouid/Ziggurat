@@ -462,7 +462,7 @@ fn tryBorrow(node: *Node, siblings: Siblings) error{OutOfMemory}!usize {
 
 // -------------------- PIECE TABLE IMPLEMENTATION --------------------
 
-const PieceTable = struct {
+pub const PieceTable = struct {
     // piece table collection object.
     // holds a pointer to the original document as well as a working append-only buffer.
     // holds a collection of ordered "pieces" which describe how to build a final document using the two buffers.

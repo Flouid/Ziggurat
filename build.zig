@@ -35,6 +35,28 @@ pub fn build(b: *std.Build) void {
     });
     utils_mod.addImport("debug", debug_mod);
 
+    const ref_piece_table_mod = b.addModule("ref_piece_table", .{
+        .root_source_file = b.path("src/core/piece_table_old.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "debug", .module = debug_mod },
+            .{ .name = "utils", .module = utils_mod },
+            .{ .name = "traits", .module = traits_mod },
+        },
+    });
+
+    const new_piece_table_mod = b.addModule("new_piece_table", .{
+        .root_source_file = b.path("src/core/piece_table.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "debug", .module = debug_mod },
+            .{ .name = "utils", .module = utils_mod },
+            .{ .name = "traits", .module = traits_mod },
+        },
+    });
+
     // This creates a module, which represents a collection of source files alongside
     // some compilation options, such as optimization mode and linked system libraries.
     // Zig modules are the preferred way of making Zig code available to consumers.
@@ -53,10 +75,14 @@ pub fn build(b: *std.Build) void {
         // Later on we'll use this module as the root module of a test executable
         // which requires us to specify a target.
         .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "debug", .module = debug_mod },
+            .{ .name = "utils", .module = utils_mod },
+            .{ .name = "traits", .module = traits_mod },
+            .{ .name = "piece_table", .module = new_piece_table_mod },
+        },
     });
-    mod.addImport("debug", debug_mod);
-    mod.addImport("traits", traits_mod);
-    mod.addImport("utils", utils_mod);
 
     // Here we define an executable. An executable needs to have a root module
     // which needs to expose a `main` function. While we could add a main function
@@ -105,6 +131,23 @@ pub fn build(b: *std.Build) void {
     // step). By default the install prefix is `zig-out/` but can be overridden
     // by passing `--prefix` or `-p`.
     b.installArtifact(exe);
+
+    const fixture_gen = b.addExecutable(.{
+        .name = "fixture-generator",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/tools/test_fixture.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "debug", .module = debug_mod },
+                .{ .name = "utils", .module = utils_mod },
+                .{ .name = "traits", .module = traits_mod },
+                .{ .name = "ref_piece_table", .module = ref_piece_table_mod },
+                .{ .name = "new_piece_table", .module = new_piece_table_mod },
+            },
+        }),
+    });
+    b.installArtifact(fixture_gen);
 
     // This creates a top level step. Top level steps have a name and can be
     // invoked by name when running `zig build` (e.g. `zig build run`).

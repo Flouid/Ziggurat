@@ -1,2 +1,4 @@
 .zig-cache
 .vscode
+fixtures
+zig-out/*
