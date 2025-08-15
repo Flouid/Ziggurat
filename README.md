@@ -17,12 +17,12 @@ This is mostly complete at this point, pending correctness tests. It's a single 
 Built in layers. 
 
 1. The top layer is a [piece table](https://dev.to/_darrenburns/the-piece-table---the-unsung-hero-of-your-text-editor-al8/comments) --- a fantastic scheme for storing edits as a collection of "pieces." A naive implementation for the pieces is an array or list, but random edits become O(n) in the number of pieces --- prohibitively slow for large numbers of writes. A version of the core engine built with this simple scheme exists at `src/core/piece_table_old.zig` for correctness verification.
-2. The next layer is a [rope](https://en.wikipedia.org/wiki/Rope_(data_structure)) implemented as a b-tree. This turns edits from O(n) to O(log n) with some large base (32-64). This along should make the engine fast enough for all uses cases given the file size limitation (A worst case edit should take < 500 operations as opposed to 4+ billion), but that's not the theoretical end.
+2. The next layer is a [rope](https://en.wikipedia.org/wiki/Rope_(data_structure)) implemented as a b-tree. This turns edits from O(n) to O(log n) with some large base (32-64). This alone should make the engine fast enough for all uses cases given the file size limitation (A worst case edit should take < 500 operations as opposed to 4+ billion), but that's not the theoretical end.
 3. Final layer would be a gap-buffer in each leaf of the tree. This adds another level of optimization, but no attempt to implement it exists at this time. Maybe later.
 
-## Instructions
+## API Reference
 
-`PieceTable` objects will expose a public API with 5 methods:
+`PieceTable` objects expose a public API with 5 methods:
 
 1. `init` - takes an allocator and initial text.
 2. `deinit` - destroys the table.
