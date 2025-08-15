@@ -26,7 +26,7 @@ const Piece = struct {
     len: usize,
 };
 
-pub const PieceTable = struct {
+pub const TextEngine = struct {
     // piece table collection object.
     // holds a pointer to the original document as well as a working append-only buffer.
     // holds a collection of ordered "pieces" which describe how to build a final document 
@@ -40,8 +40,8 @@ pub const PieceTable = struct {
     prefix: std.ArrayList(usize),
     doc_len: usize,
 
-    pub fn init(alloc: std.mem.Allocator, original: []const u8) error{OutOfMemory}!PieceTable {
-        var table = PieceTable{
+    pub fn init(alloc: std.mem.Allocator, original: []const u8) error{OutOfMemory}!TextEngine {
+        var table = TextEngine{
             .original = original,
             .add = std.ArrayList(u8).init(alloc),
             .pieces = std.ArrayList(Piece).init(alloc),
@@ -54,13 +54,13 @@ pub const PieceTable = struct {
         return table;
     }
     
-    pub fn deinit(self: *PieceTable) void {
+    pub fn deinit(self: *TextEngine) void {
         self.add.deinit();
         self.pieces.deinit();
         self.prefix.deinit();
     }
 
-    pub fn insert(self: *PieceTable, at: usize, text: []const u8) error{OutOfMemory}!void {
+    pub fn insert(self: *TextEngine, at: usize, text: []const u8) error{OutOfMemory}!void {
         debug.dassert(at <= self.doc_len, "cannot insert outside of the document");
         debug.dassert(text.len > 0, "cannot insert empty text");
 
@@ -116,7 +116,7 @@ pub const PieceTable = struct {
         try self.rebuildPrefix(idx);
     }
 
-    pub fn delete(self: *PieceTable, at: usize, count: usize) error{OutOfMemory}!void {
+    pub fn delete(self: *TextEngine, at: usize, count: usize) error{OutOfMemory}!void {
         debug.dassert(at + count <= self.doc_len, "cannot delete outside of document");
         debug.dassert(count > 0, "cannot delete 0 characters");
         debug.dassert(self.pieces.items.len > 0, "cannot delete from empty document");
@@ -184,7 +184,7 @@ pub const PieceTable = struct {
         try self.rebuildPrefix(idx);
     }
 
-    pub fn writeWith(self: *const PieceTable, w: anytype) !void {
+    pub fn writeWith(self: *const TextEngine, w: anytype) !void {
         // given any generic writing interface, stream the full working document
         traits.ensureHasMethod(w, "writeAll");
         for (self.pieces.items) |piece| {
@@ -198,7 +198,7 @@ pub const PieceTable = struct {
         }
     }
 
-    fn findPiece(self: *const PieceTable, idx: usize) usize {
+    fn findPiece(self: *const TextEngine, idx: usize) usize {
         // given an index into the WORKING DOCUMENT, find the index of the piece that index belongs to.
         // do this via a bog-standard O(log n) binary search
         debug.dassert(idx <= self.doc_len, "cannot find piece for index outside working document");
@@ -214,7 +214,7 @@ pub const PieceTable = struct {
         return lo;
     }
 
-    fn rebuildPrefix(self: *PieceTable, from: usize) error{OutOfMemory}!void {
+    fn rebuildPrefix(self: *TextEngine, from: usize) error{OutOfMemory}!void {
         // inserting in the middle of the piece table invalidates the prefix array AFTER the insertion point.
         // starting from the insertion point, rebuild the prefix array. 
         try self.prefix.resize(self.pieces.items.len);
@@ -227,7 +227,7 @@ pub const PieceTable = struct {
         }
     }
 
-    fn canMerge(self: *PieceTable, a: usize, b: usize) bool {
+    fn canMerge(self: *TextEngine, a: usize, b: usize) bool {
         // given an index to a "left" and "right" piece, see if they are contiguous and from the same buffer
         debug.dassert(a < self.pieces.items.len, "left merge must be inside piece table");
         debug.dassert(b < self.pieces.items.len, "right merge must be inside piece table");
@@ -236,13 +236,13 @@ pub const PieceTable = struct {
         return piece_a.buf == piece_b.buf and piece_a.off + piece_a.len == piece_b.off;
     }
 
-    fn merge(self: *PieceTable, a: usize, b: usize) void {
+    fn merge(self: *TextEngine, a: usize, b: usize) void {
         // merge two pieces by summing their lengths into the left one and deleting the right
         self.pieces.items[a].len += self.pieces.items[b].len;
         _ = self.pieces.orderedRemove(b);
     }
 
-    fn mergeAround(self: *PieceTable, idx: usize) usize {
+    fn mergeAround(self: *TextEngine, idx: usize) usize {
         // given a "center" index, attempt to merge it's left and right neighbors
         debug.dassert(idx < self.pieces.items.len, "merge index must be inside piece table");
         var i = idx;
@@ -258,7 +258,7 @@ test "insert: empty, start, middle, end, fast path" {
     const alloc = std.testing.allocator;
 
     // empty
-    var pt = try PieceTable.init(alloc, "");
+    var pt = try TextEngine.init(alloc, "");
     defer pt.deinit();
     try pt.insert(0, "hello");
 
@@ -268,7 +268,7 @@ test "insert: empty, start, middle, end, fast path" {
     try std.testing.expect(std.mem.eql(u8, "hello", out.items));
 
     // end (original + add)
-    var pt2 = try PieceTable.init(alloc, "abc");
+    var pt2 = try TextEngine.init(alloc, "abc");
     defer pt2.deinit();
     try pt2.insert(3, "def");
     out.clearRetainingCapacity();
@@ -283,7 +283,7 @@ test "insert: empty, start, middle, end, fast path" {
     try std.testing.expect(std.mem.eql(u8, "abcdefXY", out.items));
 
     // start + middle
-    var pt3 = try PieceTable.init(alloc, "hello world");
+    var pt3 = try TextEngine.init(alloc, "hello world");
     defer pt3.deinit();
     try pt3.insert(0, ">>> ");
     try pt3.insert(9, ",");
@@ -295,7 +295,7 @@ test "insert: empty, start, middle, end, fast path" {
 test "prefix invariants" {
     const alloc = std.testing.allocator;
 
-    var pt = try PieceTable.init(alloc, "ABCD");
+    var pt = try TextEngine.init(alloc, "ABCD");
     defer pt.deinit();
     try pt.insert(2, "zz");
     try pt.insert(0, "xx");
@@ -314,7 +314,7 @@ test "prefix invariants" {
 
 test "delete: single-piece middle" {
     const alloc = std.testing.allocator;
-    var pt = try PieceTable.init(alloc, "hello world");
+    var pt = try TextEngine.init(alloc, "hello world");
     defer pt.deinit();
 
     try pt.delete(3, 4); // remove "lo w"
@@ -326,7 +326,7 @@ test "delete: single-piece middle" {
 
 test "delete: spans pieces and merges" {
     const alloc = std.testing.allocator;
-    var pt = try PieceTable.init(alloc, "abcXYZ");
+    var pt = try TextEngine.init(alloc, "abcXYZ");
     defer pt.deinit();
     try pt.insert(3, "123"); // abc123XYZ  (pieces: Original[a..c], Add[123], Original[XYZ])
     try pt.delete(2, 4);     // delete "c123" -> "abXYZ"

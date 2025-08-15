@@ -462,7 +462,7 @@ fn tryBorrow(node: *Node, siblings: Siblings) error{OutOfMemory}!usize {
 
 // -------------------- PIECE TABLE IMPLEMENTATION --------------------
 
-pub const PieceTable = struct {
+pub const TextEngine = struct {
     // piece table collection object.
     // holds a pointer to the original document as well as a working append-only buffer.
     // holds a collection of ordered "pieces" which describe how to build a final document using the two buffers.
@@ -472,14 +472,14 @@ pub const PieceTable = struct {
     doc_len: usize,
     alloc: std.mem.Allocator,
 
-    pub fn init(alloc: std.mem.Allocator, original: []const u8) error{OutOfMemory}!PieceTable {
+    pub fn init(alloc: std.mem.Allocator, original: []const u8) error{OutOfMemory}!TextEngine {
         // initialize the root of the tree
         const leaf = try initLeaf(alloc);
         if (original.len != 0) {
             try leafPieces(leaf).append(.{ .buf = .Original, .off = 0, .len = original.len });
             leaf.weight_bytes = original.len;
         }
-        return PieceTable{
+        return TextEngine{
             .original = original,
             .add = std.ArrayList(u8).init(alloc),
             .root = leaf,
@@ -488,12 +488,12 @@ pub const PieceTable = struct {
         };
     }
     
-    pub fn deinit(self: *PieceTable) void {
+    pub fn deinit(self: *TextEngine) void {
         self.add.deinit();
         freeTree(self.alloc, self.root);
     }
 
-    pub fn insert(self: *PieceTable, at: usize, text: []const u8) error{OutOfMemory}!void {
+    pub fn insert(self: *TextEngine, at: usize, text: []const u8) error{OutOfMemory}!void {
         debug.dassert(at <= self.doc_len, "cannot insert outside of the document.");
         debug.dassert(text.len > 0, "cannot insert empty text");
 
@@ -520,7 +520,7 @@ pub const PieceTable = struct {
         self.doc_len += text.len;
     }
 
-    pub fn delete(self: *PieceTable, at: usize, len: usize) error{OutOfMemory}!void {
+    pub fn delete(self: *TextEngine, at: usize, len: usize) error{OutOfMemory}!void {
         debug.dassert(at + len <= self.doc_len, "cannot delete outside of document");
         debug.dassert(len > 0, "cannot delete empty span");
 
@@ -538,21 +538,21 @@ pub const PieceTable = struct {
         self.doc_len -= len;
     }
 
-    pub fn writeWith(self: *PieceTable, w: anytype) @TypeOf(w).Error!void {
+    pub fn writeWith(self: *TextEngine, w: anytype) @TypeOf(w).Error!void {
         traits.ensureHasMethod(w, "writeAll");
         try self.writeSubtree(w, self.root);
     }
 
     // -------------------- WRITE HELPERS --------------------
 
-    fn writeSubtree(self: *PieceTable, w: anytype, node: *const Node) @TypeOf(w).Error!void {
+    fn writeSubtree(self: *TextEngine, w: anytype, node: *const Node) @TypeOf(w).Error!void {
         switch (node.children) {
             .leaf => try self.writeLeaf(w, node),
             .internal => |*children| try self.writeChildren(w, children.items, 0)
         }
     }
 
-    fn writeLeaf(self: *PieceTable, w: anytype, leaf: *const Node) @TypeOf(w).Error!void {
+    fn writeLeaf(self: *TextEngine, w: anytype, leaf: *const Node) @TypeOf(w).Error!void {
         // helper method to write all of the pieces from a given leaf
         const pieces = leafPiecesConst(leaf);
         for (pieces.items) |piece| {
@@ -566,7 +566,7 @@ pub const PieceTable = struct {
         }
     }
 
-    fn writeChildren(self: *PieceTable, w: anytype, children: []const *Node, idx: usize) @TypeOf(w).Error!void {
+    fn writeChildren(self: *TextEngine, w: anytype, children: []const *Node, idx: usize) @TypeOf(w).Error!void {
         if (idx >= children.len) return;
         // traverse deeper on leftmost node
         try self.writeSubtree(w, children[idx]);
@@ -576,7 +576,7 @@ pub const PieceTable = struct {
 
     // -------------------- INSERT HELPERS --------------------
 
-    fn bubbleOverflowUp(self: *PieceTable, start: *Node) error{OutOfMemory}!void {
+    fn bubbleOverflowUp(self: *TextEngine, start: *Node) error{OutOfMemory}!void {
         // It's possible that a node split overflows it's parent, which splits and overflows IT'S parent...
         // Thus the logic needs to "bubble up" from the bottom of the tree until splits stop happening
         var cur: ?*Node = start;
@@ -587,7 +587,7 @@ pub const PieceTable = struct {
         }
     }
 
-    fn splitNodeIfOverflow(self: *PieceTable, node: *Node) error{OutOfMemory}!?*Node {
+    fn splitNodeIfOverflow(self: *TextEngine, node: *Node) error{OutOfMemory}!?*Node {
         // this function will look at ANY node and perform the following logic:
         //  1. if this node has less than the maximum number of children, do nothing
         //  2. if it DOES have less than the max, split it in half into a new node
@@ -618,7 +618,7 @@ pub const PieceTable = struct {
         }
     }
 
-    fn spliceNodeInTree(self: *PieceTable, old: *Node, new: *Node) error{OutOfMemory}!?*Node {
+    fn spliceNodeInTree(self: *TextEngine, old: *Node, new: *Node) error{OutOfMemory}!?*Node {
         // Wraps all of the logic add adding a new node into the tree.
         // This is for the specific case of splitting an existing node in half.
         // NOTE: Unfortunately this must be a piece table method since it modifies the root.
@@ -648,7 +648,7 @@ pub const PieceTable = struct {
 
     // -------------------- DELETE HELPERS --------------------
 
-    fn repairAfterDelete(self: *PieceTable, start: *Node) error{OutOfMemory}!void {
+    fn repairAfterDelete(self: *TextEngine, start: *Node) error{OutOfMemory}!void {
         var cur: ?*Node = start;
         while (cur) |node| {
             // always start the process with valid weights
@@ -682,7 +682,7 @@ pub const PieceTable = struct {
         }
     }
 
-    fn tryCollapseRoot(self: *PieceTable) error{OutOfMemory}!void {
+    fn tryCollapseRoot(self: *TextEngine) error{OutOfMemory}!void {
         // checks for cases where the root node is no longer needed and collapses if necessary
         switch (self.root.children) {
             .leaf => {},
@@ -703,7 +703,7 @@ pub const PieceTable = struct {
         }
     }
 
-    fn infanticide(self: *PieceTable, parent: *Node, child: *Node) void {
+    fn infanticide(self: *TextEngine, parent: *Node, child: *Node) void {
         // metal
         const siblings = childList(parent);
         const idx = indexOfChild(parent, child);
@@ -711,7 +711,7 @@ pub const PieceTable = struct {
         freeTree(self.alloc, child);
     }
 
-    fn mergeWithSibling(self: *PieceTable, src: *Node, dst: *Node) error{OutOfMemory}!?*Node {
+    fn mergeWithSibling(self: *TextEngine, src: *Node, dst: *Node) error{OutOfMemory}!?*Node {
         if (nodeCount(src) + nodeCount(dst) > nodeMax(dst)) return null;
         try transferRangeBetweenSiblings(src, dst, 0, nodeCount(src), .Back);
         const parent = src.parent.?;
@@ -725,7 +725,7 @@ pub const PieceTable = struct {
 
 test "compiles?" {
     const alloc = std.testing.allocator;
-    var pt = try PieceTable.init(alloc, "hello world");
+    var pt = try TextEngine.init(alloc, "hello world");
     defer pt.deinit();
 }
 
@@ -733,7 +733,7 @@ test "insert: empty, start, middle, end, fast path" {
     const alloc = std.testing.allocator;
 
     // empty
-    var pt = try PieceTable.init(alloc, "");
+    var pt = try TextEngine.init(alloc, "");
     defer pt.deinit();
     try pt.insert(0, "hello");
 
@@ -743,7 +743,7 @@ test "insert: empty, start, middle, end, fast path" {
     try std.testing.expect(std.mem.eql(u8, "hello", out.items));
 
     // end (original + add)
-    var pt2 = try PieceTable.init(alloc, "abc");
+    var pt2 = try TextEngine.init(alloc, "abc");
     defer pt2.deinit();
     try pt2.insert(3, "def");
     out.clearRetainingCapacity();
@@ -758,7 +758,7 @@ test "insert: empty, start, middle, end, fast path" {
     try std.testing.expect(std.mem.eql(u8, "abcdefXY", out.items));
 
     // start + middle
-    var pt3 = try PieceTable.init(alloc, "hello world");
+    var pt3 = try TextEngine.init(alloc, "hello world");
     defer pt3.deinit();
     try pt3.insert(0, ">>> ");
     try pt3.insert(9, ",");
@@ -769,7 +769,7 @@ test "insert: empty, start, middle, end, fast path" {
 
 test "delete: single-piece middle" {
     const alloc = std.testing.allocator;
-    var pt = try PieceTable.init(alloc, "hello world");
+    var pt = try TextEngine.init(alloc, "hello world");
     defer pt.deinit();
 
     try pt.delete(3, 4); // remove "lo w"
@@ -781,7 +781,7 @@ test "delete: single-piece middle" {
 
 test "delete: spans pieces and merges" {
     const alloc = std.testing.allocator;
-    var pt = try PieceTable.init(alloc, "abcXYZ");
+    var pt = try TextEngine.init(alloc, "abcXYZ");
     defer pt.deinit();
     try pt.insert(3, "123"); // abc123XYZ  (pieces: Original[a..c], Add[123], Original[XYZ])
     try pt.delete(2, 4);     // delete "c123" -> "abXYZ"

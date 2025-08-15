@@ -1,7 +1,7 @@
 //! By convention, root.zig is the root source file when making a library.
 const std = @import("std");
 
-test { _ = @import("piece_table"); }
+test { _ = @import("engine"); }
 
 pub fn bufferedPrint() !void {
     // Stdout is for the actual output of your application, for example if you

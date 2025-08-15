@@ -2,8 +2,8 @@ const std = @import("std");
 const debug = @import("debug");
 const utils = @import("utils");
 const traits = @import("traits");
-const RefPieceTable = @import("ref_piece_table").PieceTable;
-const NewPieceTable = @import("new_piece_table").PieceTable;
+const RefEngine = @import("ref_engine").TextEngine;
+const NewEngine = @import("engine").TextEngine;
 
 
 // -------------------- TEST FIXTURE IMPLEMENTATION --------------------
@@ -65,8 +65,8 @@ const TestFixture = struct {
 
 // -------------------- TEST RUNNER IMPLEMENTATION --------------------
 
-fn replayWithEditor(comptime Editor: type, alloc: std.mem.Allocator, init_text: []const u8, ops: []const TextOp) ![]const u8 {
-    var editor = try Editor.init(alloc, init_text);
+fn replayWithEngine(comptime Engine: type, alloc: std.mem.Allocator, init_text: []const u8, ops: []const TextOp) ![]const u8 {
+    var editor = try Engine.init(alloc, init_text);
     defer editor.deinit();
 
     var timer = try std.time.Timer.start();
@@ -195,7 +195,7 @@ fn generateFixture(alloc: std.mem.Allocator, cfg: GenConfig, init_text: []const 
     fixture.ops = try ops.toOwnedSlice();
     ops_owned_by_fixture = true;
 
-    fixture.final_text = try replayWithEditor(RefPieceTable, a, fixture.init_text, fixture.ops);
+    fixture.final_text = try replayWithEngine(RefEngine, a, fixture.init_text, fixture.ops);
 
     return fixture;
 }
@@ -231,6 +231,36 @@ fn writeFixtureToPath(alloc: std.mem.Allocator, path: []const u8, fixture: *cons
 
 // -------------------- CLI IMPLEMENTATION --------------------
 
+fn printUsage(cmd: [:0]u8) !void {
+    try utils.printf("There are two accepted usage cases:\n", .{});
+    try utils.printf("\tgenerate fixture:\t{s} generate <path_in> <insert %> <long %> <# ops> <path_out>\n", .{ cmd });
+    try utils.printf("\ttest with fixture:\t{s} test <path_in>\n", .{ cmd });
+}
+
+fn fixtureGeneration(a: std.mem.Allocator, args: [][:0]u8) !void {
+    const path_in = args[2];
+    const path_out = args[6];
+    const cfg = GenConfig{ 
+        .seed = 0xdead_beef_dead_beef, 
+        .p_insert = try std.fmt.parseInt(u8, args[3], 10),
+        .p_long = try std.fmt.parseInt(u8, args[4], 10),
+        .n_ops = try std.fmt.parseInt(usize, args[5], 10),
+    };
+
+    // read the input file
+    const init = try std.fs.cwd().readFileAlloc(a, path_in, 1 << 30); // 1 GiB MiB max
+    defer a.free(init);
+    // use it to generate a new test fixture
+    var fixture = try generateFixture(a, cfg, init);
+    defer fixture.deinit();
+    // write the fixture to the given path
+    try writeFixtureToPath(a, path_out, &fixture);
+}
+
+// fn testFixture(a: std.mem.Allocator, args: [][:0]u8) !void {
+
+// }
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -239,25 +269,25 @@ pub fn main() !void {
     const args = try std.process.argsAlloc(alloc);
     defer std.process.argsFree(alloc, args);
 
-    if (args.len != 6) {
-        std.debug.print("usage: {s} <path> <insert %> <long %> <# ops> <name>\n", .{ args[0] });
+    if (args.len != 3 and args.len != 7) {
+        try printUsage(args[0]);
         return;
     }
-    const path = args[1];
-    const name = args[5];
-    const cfg = GenConfig{ 
-        .seed = 0xdead_beef_dead_beef, 
-        .p_insert = try std.fmt.parseInt(u8, args[2], 10),
-        .p_long = try std.fmt.parseInt(u8, args[3], 10),
-        .n_ops = try std.fmt.parseInt(usize, args[4], 10),
-    };
+    const mode = args[1];
+    if (!std.mem.eql(u8, mode, "generate") and !std.mem.eql(u8, mode, "test")) {
+        try utils.printf("Error: unrecognized mode!\n", .{});
+        try printUsage(args[0]);
+        return;
+    } else if (std.mem.eql(u8, mode, "generate") and args.len != 7) {
+        try utils.printf("Error: expected 7 args for generate\n", .{});
+        try printUsage(args[0]);
+        return;
+    } else if (std.mem.eql(u8, mode, "test") and args.len != 3) {
+        try utils.printf("Error: expected 3 args for test\n", .{});
+        try printUsage(args[0]);
+        return;
+    }
 
-    // read the input file
-    const init = try std.fs.cwd().readFileAlloc(alloc, path, 1 << 30); // 1 GiB MiB max
-    defer alloc.free(init);
-    // use it to generate a new test fixture
-    var fixture = try generateFixture(alloc, cfg, init);
-    defer fixture.deinit();
-    // write the fixture to the given path
-    try writeFixtureToPath(alloc, name, &fixture);
+    if (args.len == 7) { try fixtureGeneration(alloc, args); }
+    // else { testFixture(alloc, args); }
 }

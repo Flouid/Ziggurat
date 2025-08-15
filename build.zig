@@ -35,8 +35,8 @@ pub fn build(b: *std.Build) void {
     });
     utils_mod.addImport("debug", debug_mod);
 
-    const ref_piece_table_mod = b.addModule("ref_piece_table", .{
-        .root_source_file = b.path("src/core/piece_table_old.zig"),
+    const ref_engine_mod = b.addModule("ref_engine", .{
+        .root_source_file = b.path("src/tools/ref_text_engine.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
@@ -46,8 +46,8 @@ pub fn build(b: *std.Build) void {
         },
     });
 
-    const new_piece_table_mod = b.addModule("new_piece_table", .{
-        .root_source_file = b.path("src/core/piece_table.zig"),
+    const engine_mod = b.addModule("engine", .{
+        .root_source_file = b.path("src/core/text_engine.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
@@ -80,7 +80,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "debug", .module = debug_mod },
             .{ .name = "utils", .module = utils_mod },
             .{ .name = "traits", .module = traits_mod },
-            .{ .name = "piece_table", .module = new_piece_table_mod },
+            .{ .name = "engine", .module = engine_mod },
         },
     });
 
@@ -133,17 +133,17 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(exe);
 
     const fixture_gen = b.addExecutable(.{
-        .name = "fixture-generator",
+        .name = "test-engine",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/tools/test_fixture.zig"),
+            .root_source_file = b.path("src/tools/test_engine.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "debug", .module = debug_mod },
                 .{ .name = "utils", .module = utils_mod },
                 .{ .name = "traits", .module = traits_mod },
-                .{ .name = "ref_piece_table", .module = ref_piece_table_mod },
-                .{ .name = "new_piece_table", .module = new_piece_table_mod },
+                .{ .name = "ref_engine", .module = ref_engine_mod },
+                .{ .name = "engine", .module = engine_mod },
             },
         }),
     });
