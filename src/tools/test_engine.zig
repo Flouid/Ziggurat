@@ -187,13 +187,7 @@ fn generateFixture(alloc: std.mem.Allocator, cfg: GenConfig, init_text: []const 
     fixture.init_text = try a.dupe(u8, init_text);
     var rng = utils.RNG.init(cfg.seed);
     var ops = try generateOps(a, &rng, cfg, init_text.len);
-    var ops_owned_by_fixture = false;
-    errdefer if (!ops_owned_by_fixture) {
-        for (ops.items) |op| if (op.op == .I) a.free(op.text);
-        ops.deinit();
-    };
     fixture.ops = try ops.toOwnedSlice();
-    ops_owned_by_fixture = true;
 
     fixture.final_text = try replayWithEngine(RefEngine, a, fixture.init_text, fixture.ops);
 
@@ -229,6 +223,106 @@ fn writeFixtureToPath(alloc: std.mem.Allocator, path: []const u8, fixture: *cons
     try utils.printf("Wrote fixture to output file in {d} ms\n", .{ write_ns / 1_000_000 });
 }
 
+inline fn trimCR(s: []const u8) []const u8 {
+    // in case there are also carriage returns seperating files
+    return if (s.len > 0 and s[s.len - 1] == '\r') s[0 .. s.len - 1] else s;
+}
+
+fn parseInsertLine(arena: std.mem.Allocator, line_in: []const u8) !TextOp {
+    const line = trimCR(line_in);
+
+    // Find the first ':'
+    const colon = std.mem.indexOfScalar(u8, line, ':') orelse return error.MissingColon;
+
+    // Left: "I <at> <len>"
+    var left = std.mem.trim(u8, line[0..colon], " \t");
+    if (!std.mem.startsWith(u8, left, "I ")) return error.BadInsertPrefix;
+
+    var toks = std.mem.tokenizeAny(u8, left[2..], " \t");
+    const at_s  = toks.next() orelse return error.BadInsertAt;
+    const len_s = toks.next() orelse return error.BadInsertLen;
+    const at  = try std.fmt.parseInt(usize, at_s, 10);
+    const len = try std.fmt.parseInt(usize, len_s, 10);
+
+    // Right: payload; allow optional single space after ':'
+    var right = line[colon + 1 ..];
+    if (right.len > 0 and right[0] == ' ') right = right[1..];
+
+    // Validate length and charset
+    if (right.len != len) return error.LengthMismatch;
+
+    // Copy into arena
+    const text = try arena.alloc(u8, len);
+    @memcpy(text, right);
+
+    return TextOp.initInsert(.{ .at = at, .len = len }, text);
+}
+
+fn parseDeleteLine(line_in: []const u8) !TextOp {
+    const line = std.mem.trim(u8, trimCR(line_in), " \t");
+    if (!std.mem.startsWith(u8, line, "D ")) return error.BadDeletePrefix;
+
+    var toks = std.mem.tokenizeAny(u8, line[2..], " \t");
+    const at_s  = toks.next() orelse return error.BadDeleteAt;
+    const len_s = toks.next() orelse return error.BadDeleteLen;
+    const at  = try std.fmt.parseInt(usize, at_s, 10);
+    const len = try std.fmt.parseInt(usize, len_s, 10);
+
+    return TextOp.initDelete(.{ .at = at, .len = len });
+}
+
+pub fn parseFixtureFromPath(parent_alloc: std.mem.Allocator, path: []const u8) !TestFixture {
+    // 0) Read whole file with parent allocator, NOT arena
+    const contents = try std.fs.cwd().readFileAlloc(parent_alloc, path, 1 << 30);
+    defer parent_alloc.free(contents);
+
+    // 1) Create fixture + arena
+    var fixture = TestFixture.init(parent_alloc);
+    errdefer fixture.deinit();
+    const a = fixture.allocator();
+
+    // 2) Iterate lines
+    var it = std.mem.splitScalar(u8, contents, '\n');
+
+    // -- line 1: n_ops
+    const l1_raw = it.next() orelse return error.EmptyFile;
+    const l1 = std.mem.trim(u8, trimCR(l1_raw), " \t");
+    const n_ops = std.fmt.parseInt(usize, l1, 10) catch return error.MissingOps;
+
+    // -- line 2: init hex
+    const l2_raw = it.next() orelse return error.MissingInit;
+    const l2 = std.mem.trim(u8, trimCR(l2_raw), " \t");
+    fixture.init_text = try utils.hexToBytesAlloc(a, l2);
+
+    // -- lines 3..: exactly n_ops ops
+    var ops_buf = std.ArrayList(TextOp).init(a);
+    errdefer ops_buf.deinit();
+
+    var read_ops: usize = 0;
+    while (read_ops < n_ops) {
+        const line_raw = it.next() orelse return error.TooFewOps;
+        const line = trimCR(line_raw);
+        if (line.len == 0) continue; // tolerate blank lines if needed
+
+        const op = switch (line[0]) {
+            'I' => try parseInsertLine(a, line),
+            'D' => try parseDeleteLine(line),
+            else => return error.UnknownLine,
+        };
+        try ops_buf.append(op);
+        read_ops += 1;
+    }
+    fixture.ops = try ops_buf.toOwnedSlice();
+
+    // -- last: final hex
+    const final_raw = it.next() orelse return error.MissingFinal;
+    const final_line = std.mem.trim(u8, trimCR(final_raw), " \t");
+    fixture.final_text = try utils.hexToBytesAlloc(a, final_line);
+
+    return fixture;
+}
+
+
 // -------------------- CLI IMPLEMENTATION --------------------
 
 fn printUsage(cmd: [:0]u8) !void {
@@ -257,9 +351,23 @@ fn fixtureGeneration(a: std.mem.Allocator, args: [][:0]u8) !void {
     try writeFixtureToPath(a, path_out, &fixture);
 }
 
-// fn testFixture(a: std.mem.Allocator, args: [][:0]u8) !void {
+fn testFixture(a: std.mem.Allocator, args: [][:0]u8) !bool {
+    const path_in = args[2];
+    try utils.printf("Beginning to parse {s} ... ", .{ path_in });
+    var timer = try std.time.Timer.start();
+    var fixture = try parseFixtureFromPath(a, path_in);
+    defer fixture.deinit();
+    const parse_ns = timer.read();
+    try utils.printf("Completed in {d} ms\n", .{ parse_ns / 1_000_000 });
 
-// }
+    const final_text = try replayWithEngine(NewEngine, a, fixture.init_text, fixture.ops);
+    defer a.free(final_text);
+    const match = std.mem.eql(u8, fixture.final_text, final_text);
+
+    if (match) { try utils.printf("Match!\n", .{}); }
+    else { try utils.printf("TEST FAILED!\n", .{}); }
+    return match;
+}
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -289,5 +397,5 @@ pub fn main() !void {
     }
 
     if (args.len == 7) { try fixtureGeneration(alloc, args); }
-    // else { testFixture(alloc, args); }
+    else { _ = try testFixture(alloc, args); }
 }

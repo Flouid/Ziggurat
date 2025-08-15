@@ -377,6 +377,20 @@ fn recomputeWeight(node: *Node) void {
     node.weight_bytes = sum;
 }
 
+fn bubbleDelta(node: *Node, delta: usize, is_neg: bool) void {
+    // for scenarios when the change is already known
+    var cur: ?*Node = node;
+    while (cur) |n| {
+        if (is_neg) {
+            debug.dassert(n.weight_bytes >= delta, "cannot give a node a negative weight");
+            n.weight_bytes -= delta;
+        } else {
+            n.weight_bytes += delta;
+        }
+        cur = n.parent;
+    }
+}
+
 fn transferRangeBetweenSiblings(src: *Node, dst: *Node, start: usize, count: usize, side: enum{Front, Back}) error{OutOfMemory}!void {
     debug.dassert(count > 0, "cannot transfer 0 nodes between siblings");
     debug.dassert(std.meta.activeTag(src.children) == std.meta.activeTag(dst.children), "source and destination must be the same type of node");
@@ -436,7 +450,10 @@ fn planBorrow(node: *Node, siblings: Siblings) BorrowPlan {
     const left_spare = if (siblings.l) |l| spareNodes(l) else 0;
     const right_spare = if (siblings.r) |r| spareNodes(r) else 0;
     // merge on new boundaries after borrowing might delete up to one piece per borrow
-    const slack: usize = if (isLeaf(node)) (@intFromBool(siblings.l != null) + @intFromBool(siblings.r != null)) else 0;
+    var slack: usize = 0;
+    const is_leaf = isLeaf(node);
+    if (is_leaf and siblings.l != null) slack += 1;
+    if (is_leaf and siblings.r != null) slack += 1;
     var total_want = @min(demand + slack, capacity);
     const take_left = @min(total_want, left_spare);
     total_want -= take_left;
@@ -507,7 +524,7 @@ pub const TextEngine = struct {
 
         // under the ideal case, new edits are appended to the end and extend an existing piece
         if (fastAppendIfPossible(leaf, add_offset, text.len, at, self.doc_len)) {
-            recomputeWeight(leaf);
+            bubbleDelta(leaf, text.len, false);
             self.doc_len += text.len;
             return;
         }
@@ -515,7 +532,7 @@ pub const TextEngine = struct {
         const loc = locateInLeaf(leaf, found.offset);
         const idx = try spliceIntoLeaf(pieces, loc, add_offset, text.len);
         mergeAround(leaf, idx);
-        recomputeWeight(leaf);
+        bubbleDelta(leaf, text.len, false);
         try self.bubbleOverflowUp(leaf);
         self.doc_len += text.len;
     }
@@ -532,6 +549,7 @@ pub const TextEngine = struct {
 
             // try to remove as much as possible within this leaf
             const removed = try deleteFromLeaf(leaf, in_leaf, remaining);
+            bubbleDelta(leaf, removed, true);
             try self.repairAfterDelete(leaf);
             remaining -= removed;
         }
@@ -621,8 +639,6 @@ pub const TextEngine = struct {
     fn spliceNodeInTree(self: *TextEngine, old: *Node, new: *Node) error{OutOfMemory}!?*Node {
         // Wraps all of the logic add adding a new node into the tree.
         // This is for the specific case of splitting an existing node in half.
-        // NOTE: Unfortunately this must be a piece table method since it modifies the root.
-        // Likewise, it's two calling parents need to be as well. Maybe fix this sometime?
         recomputeWeight(old);
         // general case, add the new node one to the right of the old
         if (old.parent) |parent| {
@@ -640,7 +656,7 @@ pub const TextEngine = struct {
             old.parent = root;
             new.parent = root;
             recomputeWeight(new);
-            recomputeWeight(root);
+            root.weight_bytes = old.weight_bytes + new.weight_bytes;
             self.root = root;
             return null;
         }
@@ -651,8 +667,6 @@ pub const TextEngine = struct {
     fn repairAfterDelete(self: *TextEngine, start: *Node) error{OutOfMemory}!void {
         var cur: ?*Node = start;
         while (cur) |node| {
-            // always start the process with valid weights
-            recomputeWeight(node);
             // at the top of the tree, check for root collapse and return
             if (node.parent == null) { try self.tryCollapseRoot(); return; }
             // make next decisions based on how many children this node has
@@ -716,77 +730,6 @@ pub const TextEngine = struct {
         try transferRangeBetweenSiblings(src, dst, 0, nodeCount(src), .Back);
         const parent = src.parent.?;
         self.infanticide(parent, src);
-        recomputeWeight(parent);
         return parent;
     }
 };
-
-// -------------------- TESTING --------------------
-
-test "compiles?" {
-    const alloc = std.testing.allocator;
-    var pt = try TextEngine.init(alloc, "hello world");
-    defer pt.deinit();
-}
-
-test "insert: empty, start, middle, end, fast path" {
-    const alloc = std.testing.allocator;
-
-    // empty
-    var pt = try TextEngine.init(alloc, "");
-    defer pt.deinit();
-    try pt.insert(0, "hello");
-
-    var out = std.ArrayList(u8).init(alloc);
-    defer out.deinit();
-    try pt.writeWith(out.writer());
-    try std.testing.expect(std.mem.eql(u8, "hello", out.items));
-
-    // end (original + add)
-    var pt2 = try TextEngine.init(alloc, "abc");
-    defer pt2.deinit();
-    try pt2.insert(3, "def");
-    out.clearRetainingCapacity();
-    try pt2.writeWith(out.writer());
-    try std.testing.expect(std.mem.eql(u8, "abcdef", out.items));
-
-    // fast path extend
-    try pt2.insert(6, "X");
-    try pt2.insert(7, "Y");
-    out.clearRetainingCapacity();
-    try pt2.writeWith(out.writer());
-    try std.testing.expect(std.mem.eql(u8, "abcdefXY", out.items));
-
-    // start + middle
-    var pt3 = try TextEngine.init(alloc, "hello world");
-    defer pt3.deinit();
-    try pt3.insert(0, ">>> ");
-    try pt3.insert(9, ",");
-    out.clearRetainingCapacity();
-    try pt3.writeWith(out.writer());
-    try std.testing.expect(std.mem.eql(u8, ">>> hello, world", out.items));
-}
-
-test "delete: single-piece middle" {
-    const alloc = std.testing.allocator;
-    var pt = try TextEngine.init(alloc, "hello world");
-    defer pt.deinit();
-
-    try pt.delete(3, 4); // remove "lo w"
-    var out = std.ArrayList(u8).init(alloc);
-    defer out.deinit();
-    try pt.writeWith(out.writer());
-    try std.testing.expect(std.mem.eql(u8, "helorld", out.items));
-}
-
-test "delete: spans pieces and merges" {
-    const alloc = std.testing.allocator;
-    var pt = try TextEngine.init(alloc, "abcXYZ");
-    defer pt.deinit();
-    try pt.insert(3, "123"); // abc123XYZ  (pieces: Original[a..c], Add[123], Original[XYZ])
-    try pt.delete(2, 4);     // delete "c123" -> "abXYZ"
-    var out = std.ArrayList(u8).init(alloc);
-    defer out.deinit();
-    try pt.writeWith(out.writer());
-    try std.testing.expect(std.mem.eql(u8, "abXYZ", out.items));
-}

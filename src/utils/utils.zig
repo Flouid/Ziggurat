@@ -1,6 +1,11 @@
 const std = @import("std");
 const debug = @import("debug");
 
+// A semirandom collection of functions which really should be in the standard library but for some reason aren't
+// the majority of this IS in the 0.14 STL, but is now missing for one reason or another
+
+// -------------------- ARRAY LISTS --------------------
+
 pub inline fn orderedRemoveRange(comptime T: type, list: *std.ArrayList(T), start: usize, count: usize) void {
     // for some strange reason the arraylist stl does not have this function.
     // Repeatedly calling .removedOrdered would be slow, this does the same more performantly.
@@ -11,6 +16,30 @@ pub inline fn orderedRemoveRange(comptime T: type, list: *std.ArrayList(T), star
     const tail_start = start + count;
     std.mem.copyForwards(T, list.items[start..list.items.len - count], list.items[tail_start..]);
     list.shrinkRetainingCapacity(list.items.len - count);
+}
+
+// -------------------- RUNTIME HEX CONVERSION --------------------
+
+fn hexNibble(c: u8) !u8 {
+    return switch (c) {
+        '0'...'9' => c - '0',
+        'a'...'f' => 10 + (c - 'a'),
+        'A'...'F' => 10 + (c - 'A'),
+        else => error.BadHexDigit,
+    };
+}
+
+pub fn hexToBytesAlloc(alloc: std.mem.Allocator, hex: []const u8) ![]u8 {
+    if (hex.len % 2 != 0) return error.BadHexLength;
+    const n = hex.len / 2;
+    var out = try alloc.alloc(u8, n);
+    var i: usize = 0;
+    while (i < n) : (i += 1) {
+        const hi = try hexNibble(hex[2 * i]);
+        const lo = try hexNibble(hex[2 * i + 1]);
+        out[i] = (hi << 4) | lo;
+    }
+    return out;
 }
 
 pub fn bytesToHexAlloc(alloc: std.mem.Allocator, bytes: []const u8) ![]u8 {
@@ -27,6 +56,8 @@ pub fn bytesToHexAlloc(alloc: std.mem.Allocator, bytes: []const u8) ![]u8 {
     }
     return out;
 }
+
+// -------------------- RANDOM NUMBER IN RANGE --------------------
 
 pub const RNG = struct {
     // wrapper for a specific pseudo-random number generator that provides results in a range.
@@ -46,7 +77,8 @@ pub const RNG = struct {
     }
 };
 
-// removes the headache of having to figure out how to print things in 0.15
+// -------------------- A SANE PRINT FUNCTION --------------------
+
 pub fn printf(comptime fmt: []const u8, args: anytype) !void {
     var buf: [1024]u8 = undefined;
     const s = try std.fmt.bufPrint(&buf, fmt, args);
