@@ -31,9 +31,9 @@ const Piece = struct {
 // -------------------- ROPE IMPLEMENTATION --------------------
 
 const MAX_BRANCH = 64;
-const MIN_BRANCH = MAX_BRANCH / 2;
+const MIN_BRANCH = 24;
 const MAX_PIECES = 64;
-const MIN_PIECES = MAX_PIECES / 2;
+const MIN_PIECES = 24;
 const MAX_ITER = 1_000;
 
 const Node = struct {
@@ -349,36 +349,8 @@ fn deleteFromLeaf(leaf: *Node, start: InLeaf, max_remove: usize) error{OutOfMemo
     return removed;
 }
 
-fn recomputeWeight(node: *Node) void {
-    // recompute the sum for any node, then propagate the difference up it's parents
-    var sum: usize = 0;
-    switch (node.children) {
-        .leaf => |*pieces| { for (pieces.items) |piece| sum += piece.len; },
-        .internal => |*children| { for (children.items) |child| sum += child.weight_bytes; },
-    }
-    // no propagation needed if sum is unchanged
-    if (sum == node.weight_bytes) return;
-
-    var cur = node.parent;
-    if (sum > node.weight_bytes) {
-        const inc = sum - node.weight_bytes;
-        while (cur) |n| {
-            n.weight_bytes += inc;
-            cur = n.parent;
-        }
-    } else {
-        const dec = node.weight_bytes - sum;
-        while (cur) |n| {
-            debug.dassert(n.weight_bytes >= dec, "cannot give a node a negative weight");
-            n.weight_bytes -= dec;
-            cur = n.parent;
-        }
-    }
-    node.weight_bytes = sum;
-}
-
 fn bubbleDelta(node: *Node, delta: usize, is_neg: bool) void {
-    // for scenarios when the change is already known
+    // propagate a change in weight up the tree
     var cur: ?*Node = node;
     while (cur) |n| {
         if (is_neg) {
@@ -401,7 +373,12 @@ fn transferRangeBetweenSiblings(src: *Node, dst: *Node, start: usize, count: usi
             const dst_pieces = leafPieces(dst);
             debug.dassert(src_pieces.items.len >= count, "source must contain enough items to transfer");
             debug.dassert(dst_pieces.items.len > 0, "destination must not start empty");
+            
+            // calculate exactly how many bytes are moving
             const to_move = src_pieces.items[start..start + count];
+            var moved_bytes: usize = 0;
+            for (to_move) |*piece| { moved_bytes += piece.len; }
+
             switch (side) {
                 .Front => try dst_pieces.insertSlice(0, to_move),
                 .Back  => try dst_pieces.appendSlice(to_move),
@@ -413,13 +390,21 @@ fn transferRangeBetweenSiblings(src: *Node, dst: *Node, start: usize, count: usi
                 .Back  => dst_pieces.items.len - count
             };
             mergeAround(dst, center);
+
+            bubbleDelta(src, moved_bytes, true);
+            bubbleDelta(dst, moved_bytes, false);
         },
         .internal => {
             const src_children = childList(src);
             const dst_children = childList(dst);
             debug.dassert(src_children.items.len >= count, "source must contain enough items to transfer");
             debug.dassert(dst_children.items.len > 0, "destination must not start empty");
+            
+            // calculate exactly how many bytes are moving
             const to_move = src_children.items[start..start + count];
+            var moved_bytes: usize = 0;
+            for (to_move) |node| { moved_bytes += node.weight_bytes; }
+
             switch (side) {
                 .Front => try dst_children.insertSlice(0, to_move),
                 .Back  => try dst_children.appendSlice(to_move),
@@ -431,10 +416,11 @@ fn transferRangeBetweenSiblings(src: *Node, dst: *Node, start: usize, count: usi
                 .Back  => dst_children.items[dst_children.items.len - count..]
             };
             for (adopted) |child| child.parent = dst;
+
+            bubbleDelta(src, moved_bytes, true);
+            bubbleDelta(dst, moved_bytes, false);
         }
     }
-    recomputeWeight(src);
-    recomputeWeight(dst);
 }
 
 const BorrowPlan = struct { take_left: usize, take_right: usize };
@@ -619,34 +605,47 @@ pub const TextEngine = struct {
                 // split half of the pieces into a new sibling
                 const mid = pieces.items.len / 2;
                 const right = try initLeaf(self.alloc);
-                try leafPieces(right).appendSlice(pieces.items[mid..]);
+                // calculate exactly how many bytes are moving
+                const to_move = pieces.items[mid..];
+                var moved_bytes: usize = 0;
+                for (to_move) |*piece| { moved_bytes += piece.len; }
+                // move them
+                try leafPieces(right).appendSlice(to_move);
                 pieces.shrinkRetainingCapacity(mid);
+                // manually adjust node weights, faster than a full recompute
+                debug.dassert(node.weight_bytes >= moved_bytes, "leaf split size underflow");
+                node.weight_bytes -= moved_bytes;
+                right.weight_bytes = moved_bytes;
+                // add the newly split node into the tree
                 return self.spliceNodeInTree(node, right);
             },
             .internal => |*children| {
+                // same as leaf case above, but just different enough to not be one function call
                 if (children.items.len <= MAX_BRANCH) return null;
                 const mid = children.items.len / 2;
                 const right = try initInternal(self.alloc);
-                try childList(right).appendSlice(children.items[mid..]);
+                const to_move = children.items[mid..];
+                var moved_bytes: usize = 0;
+                for (to_move) |n| { moved_bytes += n.weight_bytes; }
+                try childList(right).appendSlice(to_move);
                 children.shrinkRetainingCapacity(mid);
-                // fix parent pointer for moved children
+                // fix parent pointers
                 for (childList(right).items) |child| child.parent = right;
+                debug.dassert(node.weight_bytes >= moved_bytes, "leaf split size underflow");
+                node.weight_bytes -= moved_bytes;
+                right.weight_bytes = moved_bytes;
                 return self.spliceNodeInTree(node, right);
             }
         }
     }
 
     fn spliceNodeInTree(self: *TextEngine, old: *Node, new: *Node) error{OutOfMemory}!?*Node {
-        // Wraps all of the logic add adding a new node into the tree.
-        // This is for the specific case of splitting an existing node in half.
-        recomputeWeight(old);
         // general case, add the new node one to the right of the old
         if (old.parent) |parent| {
             const siblings = childList(parent);
             const idx = indexOfChild(parent, old);
             try siblings.insert(idx + 1, new);
             new.parent = parent;
-            recomputeWeight(new);
             return parent;
         // edge case, old node was the root, create a new root and create both as siblings
         } else {
@@ -655,7 +654,6 @@ pub const TextEngine = struct {
             try childList(root).append(new);
             old.parent = root;
             new.parent = root;
-            recomputeWeight(new);
             root.weight_bytes = old.weight_bytes + new.weight_bytes;
             self.root = root;
             return null;
