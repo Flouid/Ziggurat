@@ -225,6 +225,27 @@ fn getSiblings(child: *const Node) Siblings {
     return .{ .l = null, .r = null };
 }
 
+fn leftmostDescendant(node: *Node) *Node {
+    // find the leftmost descendant of any node
+    var cur = node;
+    while (!isLeaf(cur)) cur = childList(cur).items[0];
+    return cur;
+}
+
+fn nextLeaf(node: *Node) ?*Node {
+    // find the next leaf from ANYWHERE in the tree
+    // This should be at most 2 * D hops where D is the depth of the tree
+    // should be much faster than a full findAt call
+    var cur = node;
+    while (cur.parent) |parent| {
+        const siblings = childList(parent).items;
+        const idx = indexOfChild(parent, cur);
+        if (idx + 1 < siblings.len) return leftmostDescendant(siblings[idx + 1]);
+        cur = parent;
+    }
+    return null;
+}
+
 // merging
 
 fn canMerge(leaf: *const Node, a: usize, b: usize) bool {
@@ -528,17 +549,29 @@ pub const TextEngine = struct {
         debug.dassert(len > 0, "cannot delete empty span");
 
         var remaining = len;
-        while (remaining > 0) {
-            const found = findAt(self.root, at);
-            const leaf = found.leaf;
-            const in_leaf = locateInLeaf(leaf, found.offset);
+        const found = findAt(self.root, at);
+        var leaf = found.leaf;
+        var offset = found.offset;
 
-            // try to remove as much as possible within this leaf
+        const left: *Node = leaf;
+        var right: *Node = leaf;
+
+        while (remaining > 0) {
+            const in_leaf = locateInLeaf(leaf, offset);
             const removed = try deleteFromLeaf(leaf, in_leaf, remaining);
             bubbleDelta(leaf, removed, true);
-            try self.repairAfterDelete(leaf);
+            right = leaf;
             remaining -= removed;
+
+            offset = 0;
+            const next_leaf = nextLeaf(leaf);
+            if (remaining > 0) {
+                debug.dassert(next_leaf != null, "reached rightmost leaf with non-empty deletion queue");
+                leaf = next_leaf.?;
+            }
+            
         }
+        try self.repairAfterDelete(left, right);
         self.doc_len -= len;
     }
 
@@ -662,24 +695,29 @@ pub const TextEngine = struct {
 
     // -------------------- DELETE HELPERS --------------------
 
-    fn repairAfterDelete(self: *TextEngine, start: *Node) error{OutOfMemory}!void {
+    fn repairAfterDelete(self: *TextEngine, left: *Node, right: *Node) error{OutOfMemory}!void {
+        try self.repairUpward(left);
+        if (left != right) try self.repairUpward(right);
+        try self.tryCollapseRoot();
+    }
+
+    fn repairUpward(self: *TextEngine, start: *Node) error{OutOfMemory}!void {
         var cur: ?*Node = start;
         while (cur) |node| {
-            // at the top of the tree, check for root collapse and return
-            if (node.parent == null) { try self.tryCollapseRoot(); return; }
+            if (node.parent == null) return;
             // make next decisions based on how many children this node has
             const count = nodeCount(node);
+            const min = nodeMin(node);
             if (count == 0) {
                 const parent = node.parent.?;
                 self.infanticide(parent, node);
                 cur = parent;
-            } else if (count < nodeMin(node)) {
+            } else if (count < min) {
                 // the node has less than the minimum amount of children, try and steal some
-                const demand = nodeMin(node) - count;
+                const demand = min - count;
                 const siblings = getSiblings(node);
                 const borrowed = try tryBorrow(node, siblings);
-                // it is possible to borrow more nodes than were missing, if it allowed new merges
-                if (borrowed >= demand) return;
+                if (borrowed >= demand) { cur = node.parent; continue; }
                 // attempt to merge with neighbors
                 if (siblings.l) |left| {
                     if (try self.mergeWithSibling(node, left)) |parent| { cur = parent; continue; }
@@ -688,9 +726,7 @@ pub const TextEngine = struct {
                     if (try self.mergeWithSibling(right, node)) |parent| { cur = parent; continue; }
                 }
             }
-            // if we're here, we're either happy or we couldn't borrow or merge our way to happiness.
-            // There may just not be enough nodes yet, but regardless we decide to tolerate it
-            return;
+            cur = node.parent;
         }
     }
 
