@@ -74,8 +74,6 @@ const Piece = struct {
     }
 };
 
-
-
 // -------------------- ROPE IMPLEMENTATION --------------------
 
 const MAX_BRANCH = 128;
@@ -258,21 +256,20 @@ fn locateInLeaf(leaf: *const Node, offset: usize) InLeaf {
 
 const Siblings = struct { l: ?*Node, r: ?*Node };
 
-fn indexOfChild(parent: *const Node, child: *const Node) usize {
-    const children = childListConst(parent);
+fn indexOfChild(siblings: []const *Node, child: *const Node) usize {
     var idx: usize = 0;
-    while (idx < children.items.len and children.items[idx] != child) : (idx += 1) {}
-    debug.dassert(idx < children.items.len, "child not found under parent");
+    while (idx < siblings.len and siblings[idx] != child) : (idx += 1) {}
+    debug.dassert(idx < siblings.len, "child not found under parent");
     return idx;
 }
 
 fn getSiblings(child: *const Node) Siblings {
     if (child.parent) |parent| {
-        const siblings = childListConst(parent);
-        const idx = indexOfChild(parent, child);
+        const siblings = childListConst(parent).items;
+        const idx = indexOfChild(siblings, child);
         return .{
-            .l = if (idx > 0) siblings.items[idx-1] else null,
-            .r = if (idx + 1 < siblings.items.len) siblings.items[idx+1] else null
+            .l = if (idx > 0) siblings[idx-1] else null,
+            .r = if (idx + 1 < siblings.len) siblings[idx+1] else null
         };
     }
     return .{ .l = null, .r = null };
@@ -292,7 +289,7 @@ fn nextLeaf(node: *Node) ?*Node {
     var cur = node;
     while (cur.parent) |parent| {
         const siblings = childList(parent).items;
-        const idx = indexOfChild(parent, cur);
+        const idx = indexOfChild(siblings, cur);
         if (idx + 1 < siblings.len) return leftmostDescendant(siblings[idx + 1]);
         cur = parent;
     }
@@ -351,13 +348,13 @@ fn spliceIntoLeaf(pieces: *std.ArrayList(Piece), loc: InLeaf, add_off: usize, ad
     if (loc.piece_idx < len) {
         const old = pieces.items[loc.piece_idx];
         const len_suffix = old.len() - loc.offset;
-
+        // create a buffer that holds at most 3 new pieces and populate
         var buf: [3]Piece = undefined;
         var n: usize = 0;
         if (loc.offset != 0) { buf[n] = old; buf[n].setLen(loc.offset); n += 1; }
         buf[n] = new_piece; n += 1;
         if (len_suffix != 0) { buf[n] = old; buf[n].off += loc.offset; buf[n].setLen(len_suffix); n += 1; }
-
+        // carefully splice that buffer into the piece array
         pieces.items[loc.piece_idx] = buf[0];
         if (n >= 2) try pieces.insertSlice(loc.piece_idx + 1, buf[1..n]);
         return loc.piece_idx + @intFromBool(loc.offset != 0);
@@ -375,7 +372,6 @@ fn deleteFromLeaf(leaf: *Node, start: InLeaf, max_remove: usize) error{OutOfMemo
     var piece_idx = start.piece_idx;
     const prefix_len = start.offset;
     if (piece_idx >= pieces.items.len) return 0;
-
     // handle the current (first) piece
     var piece = &pieces.items[piece_idx];
     var take = @min(max_remove, piece.len() - prefix_len);
@@ -396,7 +392,6 @@ fn deleteFromLeaf(leaf: *Node, start: InLeaf, max_remove: usize) error{OutOfMemo
         else { piece.off += take; piece.setLen(suffix_len); }
         removed += take;
     }
-
     // if applicable, remove entire middle pieces, coalesce into one big delete at the end
     var end_range = piece_idx;
     while (end_range < pieces.items.len and removed < max_remove) : (end_range += 1) {
@@ -404,7 +399,6 @@ fn deleteFromLeaf(leaf: *Node, start: InLeaf, max_remove: usize) error{OutOfMemo
         if (piece.len() <= (max_remove - removed)) removed += piece.len() else break;
     }
     if (end_range > piece_idx) utils.orderedRemoveRange(Piece, pieces, piece_idx, end_range - piece_idx);
-
     // we may still need to remove the front of one final piece
     if (piece_idx < pieces.items.len and removed < max_remove) {
         piece = &pieces.items[piece_idx];
@@ -413,7 +407,6 @@ fn deleteFromLeaf(leaf: *Node, start: InLeaf, max_remove: usize) error{OutOfMemo
         piece.shrinkBy(take);
         removed += take;
     }
-
     // if there are still pieces left, perform a local coalesce before returning
     if (pieces.items.len == 0) return removed;
     if (piece_idx == pieces.items.len) piece_idx -= 1;
@@ -445,12 +438,10 @@ fn transferRangeBetweenSiblings(src: *Node, dst: *Node, start: usize, count: usi
             const dst_pieces = leafPieces(dst);
             debug.dassert(src_pieces.items.len >= count, "source must contain enough items to transfer");
             debug.dassert(dst_pieces.items.len > 0, "destination must not start empty");
-            
             // calculate exactly how many bytes are moving
             const to_move = src_pieces.items[start..start + count];
             var moved_bytes: usize = 0;
             for (to_move) |*piece| { moved_bytes += piece.len(); }
-
             switch (side) {
                 .Front => try dst_pieces.insertSlice(0, to_move),
                 .Back  => try dst_pieces.appendSlice(to_move),
@@ -462,7 +453,6 @@ fn transferRangeBetweenSiblings(src: *Node, dst: *Node, start: usize, count: usi
                 .Back  => dst_pieces.items.len - count
             };
             mergeAround(dst, center);
-
             bubbleDelta(src, moved_bytes, true);
             bubbleDelta(dst, moved_bytes, false);
         },
@@ -471,7 +461,6 @@ fn transferRangeBetweenSiblings(src: *Node, dst: *Node, start: usize, count: usi
             const dst_children = childList(dst);
             debug.dassert(src_children.items.len >= count, "source must contain enough items to transfer");
             debug.dassert(dst_children.items.len > 0, "destination must not start empty");
-            
             // calculate exactly how many bytes are moving
             const to_move = src_children.items[start..start + count];
             var moved_bytes: usize = 0;
@@ -488,7 +477,6 @@ fn transferRangeBetweenSiblings(src: *Node, dst: *Node, start: usize, count: usi
                 .Back  => dst_children.items[dst_children.items.len - count..]
             };
             for (adopted) |child| child.parent = dst;
-
             bubbleDelta(src, moved_bytes, true);
             bubbleDelta(dst, moved_bytes, false);
         }
@@ -513,6 +501,7 @@ fn planBorrow(node: *Node, siblings: Siblings) BorrowPlan {
     if (is_leaf and siblings.l != null) slack += 1;
     if (is_leaf and siblings.r != null) slack += 1;
     var total_want = @min(demand + slack, capacity);
+    // preferentially borrow from the right sibling, it's faster
     const take_right = @min(total_want, right_spare);
     total_want -= take_right;
     const take_left = @min(total_want, left_spare);
@@ -574,22 +563,18 @@ pub const TextEngine = struct {
     pub fn insert(self: *TextEngine, at: usize, text: []const u8) error{OutOfMemory}!void {
         debug.dassert(at <= self.doc_len, "cannot insert outside of the document.");
         debug.dassert(text.len > 0, "cannot insert empty text");
-
         const add_offset = self.add.items.len;
         try self.add.appendSlice(text);
-
         // find the leaf node that corresponds to the insertion index
         const found = findAt(self.root, at);
         const leaf = found.leaf;
         const pieces = leafPieces(leaf);
-
         // under the ideal case, new edits are appended to the end and extend an existing piece
         if (fastAppendIfPossible(leaf, add_offset, text.len, at, self.doc_len)) {
             bubbleDelta(leaf, text.len, false);
             self.doc_len += text.len;
             return;
         }
-
         const loc = locateInLeaf(leaf, found.offset);
         const idx = try spliceIntoLeaf(pieces, loc, add_offset, text.len);
         mergeAround(leaf, idx);
@@ -601,22 +586,16 @@ pub const TextEngine = struct {
     pub fn delete(self: *TextEngine, at: usize, len: usize) error{OutOfMemory}!void {
         debug.dassert(at + len <= self.doc_len, "cannot delete outside of document");
         debug.dassert(len > 0, "cannot delete empty span");
-
         var remaining = len;
         const found = findAt(self.root, at);
         var leaf = found.leaf;
         var offset = found.offset;
-
         const left: *Node = leaf;
-        var right: *Node = leaf;
-
         while (remaining > 0) {
             const in_leaf = locateInLeaf(leaf, offset);
             const removed = try deleteFromLeaf(leaf, in_leaf, remaining);
             bubbleDelta(leaf, removed, true);
-            right = leaf;
             remaining -= removed;
-
             offset = 0;
             const next_leaf = nextLeaf(leaf);
             if (remaining > 0) {
@@ -625,7 +604,7 @@ pub const TextEngine = struct {
             }
             
         }
-        try self.repairAfterDelete(left, right);
+        try self.repairAfterDelete(left, leaf);
         self.doc_len -= len;
     }
 
@@ -729,7 +708,7 @@ pub const TextEngine = struct {
         // general case, add the new node one to the right of the old
         if (old.parent) |parent| {
             const siblings = childList(parent);
-            const idx = indexOfChild(parent, old);
+            const idx = indexOfChild(siblings.items, old);
             try siblings.insert(idx + 1, new);
             new.parent = parent;
             return parent;
@@ -808,7 +787,7 @@ pub const TextEngine = struct {
     fn infanticide(self: *TextEngine, parent: *Node, child: *Node) void {
         // metal
         const siblings = childList(parent);
-        const idx = indexOfChild(parent, child);
+        const idx = indexOfChild(siblings.items, child);
         _ = siblings.orderedRemove(idx);
         freeTree(self.alloc, child);
     }
