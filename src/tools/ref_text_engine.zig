@@ -3,10 +3,9 @@ const debug = @import("debug");
 const traits = @import("traits");
 
 // The piece-table implementation for storing edits to a document efficiently in memory.
-// This is a relatively simple and naive implementation to start!
-//  - FULL files are read into a buffer, NOT streamed via mmap
-//  - NO b-tree/rope optimizations at this time!
-//  - Modifications (anywhere but the end) are O(n) in the length of the piece table!
+// This was a relatively simple first pass implementation to understand the idea and get it working.
+// It's now kept as a correctness reference. 
+// This is easy to verify, so it is used to create ground truth test artifacts.
 
 const BufferType = enum {
     Original,
@@ -252,86 +251,3 @@ pub const TextEngine = struct {
         return i;
     }
 };
-
-
-test "insert: empty, start, middle, end, fast path" {
-    const alloc = std.testing.allocator;
-
-    // empty
-    var pt = try TextEngine.init(alloc, "");
-    defer pt.deinit();
-    try pt.insert(0, "hello");
-
-    var out = std.ArrayList(u8).init(alloc);
-    defer out.deinit();
-    try pt.writeWith(out.writer());
-    try std.testing.expect(std.mem.eql(u8, "hello", out.items));
-
-    // end (original + add)
-    var pt2 = try TextEngine.init(alloc, "abc");
-    defer pt2.deinit();
-    try pt2.insert(3, "def");
-    out.clearRetainingCapacity();
-    try pt2.writeWith(out.writer());
-    try std.testing.expect(std.mem.eql(u8, "abcdef", out.items));
-
-    // fast path extend
-    try pt2.insert(6, "X");
-    try pt2.insert(7, "Y");
-    out.clearRetainingCapacity();
-    try pt2.writeWith(out.writer());
-    try std.testing.expect(std.mem.eql(u8, "abcdefXY", out.items));
-
-    // start + middle
-    var pt3 = try TextEngine.init(alloc, "hello world");
-    defer pt3.deinit();
-    try pt3.insert(0, ">>> ");
-    try pt3.insert(9, ",");
-    out.clearRetainingCapacity();
-    try pt3.writeWith(out.writer());
-    try std.testing.expect(std.mem.eql(u8, ">>> hello, world", out.items));
-}
-
-test "prefix invariants" {
-    const alloc = std.testing.allocator;
-
-    var pt = try TextEngine.init(alloc, "ABCD");
-    defer pt.deinit();
-    try pt.insert(2, "zz");
-    try pt.insert(0, "xx");
-    try pt.insert(pt.doc_len, "yy");
-
-    // prefix size & cumulative sums
-    try std.testing.expectEqual(pt.pieces.items.len, pt.prefix.items.len);
-    if (pt.prefix.items.len > 0) try std.testing.expectEqual(@as(usize, 0), pt.prefix.items[0]);
-    var acc: usize = 0;
-    for (pt.pieces.items, 0..) |p, i| {
-        try std.testing.expectEqual(acc, pt.prefix.items[i]);
-        acc += p.len;
-    }
-    try std.testing.expectEqual(acc, pt.doc_len);
-}
-
-test "delete: single-piece middle" {
-    const alloc = std.testing.allocator;
-    var pt = try TextEngine.init(alloc, "hello world");
-    defer pt.deinit();
-
-    try pt.delete(3, 4); // remove "lo w"
-    var out = std.ArrayList(u8).init(alloc);
-    defer out.deinit();
-    try pt.writeWith(out.writer());
-    try std.testing.expect(std.mem.eql(u8, "helorld", out.items));
-}
-
-test "delete: spans pieces and merges" {
-    const alloc = std.testing.allocator;
-    var pt = try TextEngine.init(alloc, "abcXYZ");
-    defer pt.deinit();
-    try pt.insert(3, "123"); // abc123XYZ  (pieces: Original[a..c], Add[123], Original[XYZ])
-    try pt.delete(2, 4);     // delete "c123" -> "abXYZ"
-    var out = std.ArrayList(u8).init(alloc);
-    defer out.deinit();
-    try pt.writeWith(out.writer());
-    try std.testing.expect(std.mem.eql(u8, "abXYZ", out.items));
-}

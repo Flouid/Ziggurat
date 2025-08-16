@@ -46,7 +46,7 @@ const Node = struct {
     children: union(enum) {
         internal: std.ArrayList(*Node),
         leaf:     std.ArrayList(Piece)
-    }
+    },
 };
 
 const Found = struct {
@@ -316,7 +316,7 @@ fn spliceIntoLeaf(pieces: *std.ArrayList(Piece), loc: InLeaf, add_off: usize, ad
 fn deleteFromLeaf(leaf: *Node, start: InLeaf, max_remove: usize) error{OutOfMemory}!usize {
     // attempt to delete at most max_remove bytes from the current leaf.
     // return the total number that could be deleted, deletion may go into another node.
-    const pieces = leafPieces(leaf);
+    var pieces = leafPieces(leaf);
     var removed: usize = 0;
     var piece_idx = start.piece_idx;
     const prefix_len = start.offset;
@@ -325,10 +325,8 @@ fn deleteFromLeaf(leaf: *Node, start: InLeaf, max_remove: usize) error{OutOfMemo
     // handle the current (first) piece
     var piece = &pieces.items[piece_idx];
     var take = @min(max_remove, piece.len - prefix_len);
-    // lucky case: delete the whole piece
-    if (prefix_len == 0 and take == piece.len) { _ = pieces.orderedRemove(piece_idx); }
-    // general case, we may need to create a new suffix piece
-    else {
+    // we can't just delete the entire thing
+    if (prefix_len > 0 or take < piece.len) {
         const suffix_len = piece.len - prefix_len - take;
         // delete the middle of the piece
         if (prefix_len > 0 and suffix_len > 0) {
@@ -338,21 +336,20 @@ fn deleteFromLeaf(leaf: *Node, start: InLeaf, max_remove: usize) error{OutOfMemo
             suffix.len = suffix_len;
             try pieces.insert(piece_idx + 1, suffix);
             piece_idx += 1;
-        // there is no suffix, just trim the current piece
+        // there is no suffix, trim the front
         } else if (prefix_len > 0) { piece.len = prefix_len; piece_idx += 1; }
-        // there is no prefix, but the entire piece wasn't removed
+        // there is no prefix, trim the tail
         else { piece.off += take; piece.len = suffix_len; }
+        removed += take;
     }
-    removed += take;
 
-    // if applicable, remove entire middle pieces
-    while (piece_idx < pieces.items.len and removed < max_remove) {
-        piece = &pieces.items[piece_idx];
-        if (piece.len <= (max_remove - removed)) {
-            removed += piece.len;
-            _ = pieces.orderedRemove(piece_idx);
-        } else break;
+    // if applicable, remove entire middle pieces, coalesce into one big delete at the end
+    var end_range = piece_idx;
+    while (end_range < pieces.items.len and removed < max_remove) : (end_range += 1) {
+        piece = &pieces.items[end_range];
+        if (piece.len <= (max_remove - removed)) removed += piece.len else break;
     }
+    if (end_range > piece_idx) utils.orderedRemoveRange(Piece, pieces, piece_idx, end_range - piece_idx);
 
     // we may still need to remove the front of one final piece
     if (piece_idx < pieces.items.len and removed < max_remove) {
@@ -462,9 +459,9 @@ fn planBorrow(node: *Node, siblings: Siblings) BorrowPlan {
     if (is_leaf and siblings.l != null) slack += 1;
     if (is_leaf and siblings.r != null) slack += 1;
     var total_want = @min(demand + slack, capacity);
-    const take_left = @min(total_want, left_spare);
-    total_want -= take_left;
     const take_right = @min(total_want, right_spare);
+    total_want -= take_right;
+    const take_left = @min(total_want, left_spare);
     return .{ .take_left = take_left, .take_right = take_right };
 }
 
@@ -713,11 +710,9 @@ pub const TextEngine = struct {
                 self.infanticide(parent, node);
                 cur = parent;
             } else if (count < min) {
-                // the node has less than the minimum amount of children, try and steal some
+                // the node has less than the minimum amount of children...
                 const demand = min - count;
                 const siblings = getSiblings(node);
-                const borrowed = try tryBorrow(node, siblings);
-                if (borrowed >= demand) { cur = node.parent; continue; }
                 // attempt to merge with neighbors
                 if (siblings.l) |left| {
                     if (try self.mergeWithSibling(node, left)) |parent| { cur = parent; continue; }
@@ -725,6 +720,9 @@ pub const TextEngine = struct {
                 if (siblings.r) |right| {
                     if (try self.mergeWithSibling(right, node)) |parent| { cur = parent; continue; }
                 }
+                // failing that, try and borrow children
+                const borrowed = try tryBorrow(node, siblings);
+                if (borrowed >= demand) { cur = node.parent; continue; }
             }
             cur = node.parent;
         }
