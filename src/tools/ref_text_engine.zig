@@ -1,6 +1,5 @@
 const std = @import("std");
 const debug = @import("debug");
-const traits = @import("traits");
 
 // The piece-table implementation for storing edits to a document efficiently in memory.
 // This was a relatively simple first pass implementation to understand the idea and get it working.
@@ -183,9 +182,8 @@ pub const TextEngine = struct {
         try self.rebuildPrefix(idx);
     }
 
-    pub fn writeWith(self: *const TextEngine, w: anytype) !void {
+    pub fn materialize(self: *const TextEngine, w: anytype) !void {
         // given any generic writing interface, stream the full working document
-        traits.ensureHasMethod(w, "writeAll");
         for (self.pieces.items) |piece| {
             const src = switch(piece.buf) {
                 .Original => self.original,

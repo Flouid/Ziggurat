@@ -1,7 +1,6 @@
 const std = @import("std");
 const debug = @import("debug");
 const utils = @import("utils");
-const traits = @import("traits");
 const RefEngine = @import("ref_engine").TextEngine;
 const NewEngine = @import("engine").TextEngine;
 
@@ -83,9 +82,11 @@ fn replayWithEngine(comptime Engine: type, alloc: std.mem.Allocator, init_text: 
 
     // deinit is handled when returning an owned slice
     var out_buf = std.ArrayList(u8).init(alloc);
+    // making the output buffer big enough to hold the input text is probably a safe assumption
+    try out_buf.ensureTotalCapacity(init_text.len);
 
     timer.reset();
-    try editor.writeWith(out_buf.writer());
+    try editor.materialize(out_buf.writer());
     const write_ns = timer.read();
     try utils.printf("Editor materialized {d} bytes in {d} ms\n", .{ out_buf.items.len, write_ns / 1_000_000 });
 

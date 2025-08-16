@@ -1,6 +1,5 @@
 const std = @import("std");
 const debug = @import("debug");
-const traits = @import("traits");
 const utils = @import("utils");
 
 // The piece-table implementation for storing edits to a document efficiently in memory.
@@ -30,9 +29,9 @@ const Piece = struct {
 
 // -------------------- ROPE IMPLEMENTATION --------------------
 
-const MAX_BRANCH = 64;
+const MAX_BRANCH = 128;
 const MIN_BRANCH = 8;
-const MAX_PIECES = 64;
+const MAX_PIECES = 128;
 const MIN_PIECES = 8;
 const MAX_ITER = 1_000;
 
@@ -572,8 +571,7 @@ pub const TextEngine = struct {
         self.doc_len -= len;
     }
 
-    pub fn writeWith(self: *TextEngine, w: anytype) @TypeOf(w).Error!void {
-        traits.ensureHasMethod(w, "writeAll");
+    pub fn materialize(self: *TextEngine, w: anytype) @TypeOf(w).Error!void {
         try self.writeSubtree(w, self.root);
     }
 

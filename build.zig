@@ -25,10 +25,6 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/utils/debug.zig"),
         .target = target
     });
-    const traits_mod = b.addModule("traits", .{
-        .root_source_file = b.path("src/utils/traits.zig"),
-        .target = target
-    });
     const utils_mod = b.addModule("utils", .{
         .root_source_file = b.path("src/utils/utils.zig"),
         .target = target
@@ -42,7 +38,6 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "debug", .module = debug_mod },
             .{ .name = "utils", .module = utils_mod },
-            .{ .name = "traits", .module = traits_mod },
         },
     });
 
@@ -53,7 +48,6 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "debug", .module = debug_mod },
             .{ .name = "utils", .module = utils_mod },
-            .{ .name = "traits", .module = traits_mod },
         },
     });
 
@@ -79,7 +73,6 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "debug", .module = debug_mod },
             .{ .name = "utils", .module = utils_mod },
-            .{ .name = "traits", .module = traits_mod },
             .{ .name = "engine", .module = engine_mod },
         },
     });
@@ -141,7 +134,6 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "debug", .module = debug_mod },
                 .{ .name = "utils", .module = utils_mod },
-                .{ .name = "traits", .module = traits_mod },
                 .{ .name = "ref_engine", .module = ref_engine_mod },
                 .{ .name = "engine", .module = engine_mod },
             },
