@@ -171,16 +171,20 @@ fn findAt(root: *Node, at: usize) Found {
             .leaf => return .{ .leaf = node, .offset = idx},
             // otherwise, iterate through children
             .internal => |*children| {
-                debug.dassert(children.items.len > 0, "internal node must have at least one child");
+                const items = children.items;
+                const len = items.len;
+                debug.dassert(len > 0, "internal node must have at least one child");
                 var i: usize = 0;
                 // cumulatively subtract node weights from the index, we want an OFFSET
-                while (i < children.items.len and idx >= children.items[i].weight_bytes) : (i += 1) {
-                    idx -= children.items[i].weight_bytes;
+                while (i < len) : (i += 1) {
+                    const weight = items[i].weight_bytes;
+                    if (idx < weight) break;
+                    idx -= weight;
                 }
                 // if the node walked to the very end, a small manual adjustment is needed for consistency
-                if (i == children.items.len) { i -= 1; idx = children.items[i].weight_bytes; }
-                // children.items[i].weight_bytes <= idx < children.items[i+1].weight_bytes
-                node = children.items[i];
+                if (i == len) { i -= 1; idx = items[i].weight_bytes; }
+                // items[i].weight_bytes <= idx < items[i+1].weight_bytes
+                node = items[i];
             }
         }
     }
