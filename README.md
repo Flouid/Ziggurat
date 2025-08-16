@@ -5,11 +5,12 @@ The name isn't that meaningful, just a play on zig and the idea of building func
 
 ## Layer 1: Text Engine
 
-This is more or less complete. In release mode, it will perform 100,000 mixed random operations of varying lengths on large files in ~20ms. It can materialize full documents in the 10MB range in under 5ms. It's highly portable, with no dependencies other than zig itself. You could deploy this on a microcontroller, though I probably wouldn't recommend it since it relies heavily on the heap. 
+This is more or less complete. In release mode, it will perform 100,000 mixed random operations of varying lengths on large files in ~15-20ms. It can materialize full documents in the 10MB range in 5ms. It's highly portable, with no dependencies other than zig itself. You could deploy this on a microcontroller, though I probably wouldn't recommend it since it relies heavily on the heap. 
 
 ### Limitations
 
 1. It makes some assumptions about UTF-8 encoding. There is no guarantee it will work with multi-character bytes. In fact it very probably wont.
+2. Maximum file size is limited to half of your system's virtual address space. That's 2GB on 32bit systems, irrelevant on 64bit systems. 
 
 ### Implementation
 

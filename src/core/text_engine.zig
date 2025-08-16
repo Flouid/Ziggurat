@@ -14,18 +14,68 @@ const utils = @import("utils");
 //     => Overall:          O(log_{MIN_BRANCH} P) with small constants
 //   Range edit spanning t pieces: O(log_{MIN_BRANCH} P + t)
 
+const Buffer = enum { Original, Add };
+
 const Piece = struct {
     // one entry in the piece table.
-    // pieces are a 3-tuple with
+    // pieces are logically a 3-tuple with
     //  1. buffer identifier
     //  2. starting index in source buffer
     //  3. sequence length
     // the working document can be assembled by walking through the piece table
     // and concatenating the "pieces" from each buffer.
-    buf: enum { Original, Add },
+
+    // HOWEVER...
+    // On a 64-bit system, 2 usizes and an enum are 8 + 8 + 1 bytes, alignment rounds up to 24(!) bytes.
+    // the buffer flag is really just one bit. Taking that bit from len and accepting that documents must
+    // be at MOST 1/2 of the systems virtual memory (2GB on 32bit) allows us to do some packing.
+    // With this implementation, pieces are now just 2 usizes, 16 bytes! 33% smaller.
+    // This allows for better cache locality and in optimized releases speeds things up by 20-30%!
     off: usize,
-    len: usize,
+    len_and_buf: usize,
+
+    const hi_bit = @as(usize, 1) << (@bitSizeOf(usize) - 1);
+    const len_mask = ~hi_bit;
+    const max_len = len_mask;
+
+    inline fn len(self: Piece) usize {
+        return self.len_and_buf & len_mask;
+    }
+
+    inline fn buf(self: Piece) Buffer {
+        return if ((self.len_and_buf & hi_bit) == 0) .Original else .Add;
+    }
+
+    inline fn compose(length: usize, buffer: Buffer) usize {
+        const flag: usize = if (buffer == .Add) hi_bit else 0;
+        return (length & len_mask) | flag;
+    }
+
+    inline fn setLen(self: *Piece, new_len: usize) void {
+        self.len_and_buf = compose(new_len, self.buf());
+    }
+
+    inline fn setBuf(self: *Piece, new_buf: Buffer) void {
+        const len_only = self.len_and_buf & len_mask;
+        self.len_and_buf = compose(len_only, new_buf);
+    }
+
+    inline fn growBy(self: *Piece, delta: usize) void {
+        self.len_and_buf = compose(self.len() + delta, self.buf());
+    }
+
+    inline fn shrinkBy(self: *Piece, delta: usize) void {
+        self.len_and_buf = compose(self.len() - delta, self.buf());
+    }
+
+    inline fn init(buffer: Buffer, length: usize, offset: usize) Piece {
+        debug.dassert((length & hi_bit) == 0, "file size must be at most half of your system's virtual address space");
+        const flag: usize = if (buffer == .Add) hi_bit else 0;
+        return .{ .off = offset, .len_and_buf = length | flag };
+    }
 };
+
+
 
 // -------------------- ROPE IMPLEMENTATION --------------------
 
@@ -192,16 +242,17 @@ fn findAt(root: *Node, at: usize) Found {
 }
 
 fn locateInLeaf(leaf: *const Node, offset: usize) InLeaf {
-    const pieces = leafPiecesConst(leaf);
+    const items = leafPiecesConst(leaf).items;
+    const len = items.len;
     var acc: usize = 0;
     var idx: usize = 0;
-    while (idx < pieces.items.len) : (idx += 1) {
-        const piece = &pieces.items[idx];
-        if (offset < acc + piece.len) return .{ .piece_idx = idx, .offset = offset - acc };
-        acc += piece.len;
+    while (idx < len) : (idx += 1) {
+        const piece = &items[idx];
+        if (offset < acc + piece.len()) return .{ .piece_idx = idx, .offset = offset - acc };
+        acc += piece.len();
     }
     // return a sentinel to the end of the pieces array
-    return .{ .piece_idx = pieces.items.len, .offset = 0 };
+    return .{ .piece_idx = len, .offset = 0 };
 }
 
 // navigation within the tree structure
@@ -258,13 +309,13 @@ fn canMerge(leaf: *const Node, a: usize, b: usize) bool {
     debug.dassert(b < pieces.items.len, "right merge must be inside leaf");
     const piece_a = pieces.items[a];
     const piece_b = pieces.items[b];
-    return piece_a.buf == piece_b.buf and piece_a.off + piece_a.len == piece_b.off;
+    return piece_a.buf() == piece_b.buf() and piece_a.off + piece_a.len() == piece_b.off;
 }
 
 fn merge(leaf: *Node, a: usize, b: usize) void {
     // merge two pieces by summing their lengths into the left one and deleting the right
     const pieces = leafPieces(leaf);
-    pieces.items[a].len += pieces.items[b].len;
+    pieces.items[a].growBy(pieces.items[b].len());
     _ = pieces.orderedRemove(b);
 }
 
@@ -286,8 +337,8 @@ fn fastAppendIfPossible(leaf: *Node, add_off: usize, add_len: usize, at: usize, 
     if (pieces.items.len == 0) return false;
     const last = &pieces.items[pieces.items.len - 1];
     // only valid if the last piece is from the add buffer and contiguous with new entry
-    if (last.buf == .Add and last.off + last.len == add_off) {
-        last.len += add_len;
+    if (last.buf() == .Add and last.off + last.len() == add_off) {
+        last.growBy(add_len);
         return true;
     }
     return false;
@@ -296,23 +347,24 @@ fn fastAppendIfPossible(leaf: *Node, add_off: usize, add_len: usize, at: usize, 
 fn spliceIntoLeaf(pieces: *std.ArrayList(Piece), loc: InLeaf, add_off: usize, add_len: usize) error{OutOfMemory}!usize {
     // generic path, build 1-3 replacement pieces and insert them into the piece table.
     // The return is the index of the newly inserted piece
-    const new_piece = Piece{ .buf = .Add, .off = add_off, .len = add_len };
-    if (loc.piece_idx < pieces.items.len) {
+    const new_piece = Piece.init(.Add, add_len, add_off);
+    const len = pieces.items.len;
+    if (loc.piece_idx < len) {
         const old = pieces.items[loc.piece_idx];
-        const len_suffix = old.len - loc.offset;
+        const len_suffix = old.len() - loc.offset;
 
         var buf: [3]Piece = undefined;
         var n: usize = 0;
-        if (loc.offset != 0) { buf[n] = old; buf[n].len = loc.offset; n += 1; }
+        if (loc.offset != 0) { buf[n] = old; buf[n].setLen(loc.offset); n += 1; }
         buf[n] = new_piece; n += 1;
-        if (len_suffix != 0) { buf[n] = old; buf[n].off += loc.offset; buf[n].len = len_suffix; n += 1; }
+        if (len_suffix != 0) { buf[n] = old; buf[n].off += loc.offset; buf[n].setLen(len_suffix); n += 1; }
 
         pieces.items[loc.piece_idx] = buf[0];
         if (n >= 2) try pieces.insertSlice(loc.piece_idx + 1, buf[1..n]);
         return loc.piece_idx + @intFromBool(loc.offset != 0);
     } else {
         try pieces.append(new_piece);
-        return pieces.items.len - 1;
+        return len - 1;
     }
 }
 
@@ -327,22 +379,22 @@ fn deleteFromLeaf(leaf: *Node, start: InLeaf, max_remove: usize) error{OutOfMemo
 
     // handle the current (first) piece
     var piece = &pieces.items[piece_idx];
-    var take = @min(max_remove, piece.len - prefix_len);
+    var take = @min(max_remove, piece.len() - prefix_len);
     // we can't just delete the entire thing
-    if (prefix_len > 0 or take < piece.len) {
-        const suffix_len = piece.len - prefix_len - take;
+    if (prefix_len > 0 or take < piece.len()) {
+        const suffix_len = piece.len() - prefix_len - take;
         // delete the middle of the piece
         if (prefix_len > 0 and suffix_len > 0) {
-            piece.len = prefix_len;
+            piece.setLen(prefix_len);
             var suffix = piece.*;
             suffix.off += prefix_len + take;
-            suffix.len = suffix_len;
+            suffix.setLen(suffix_len);
             try pieces.insert(piece_idx + 1, suffix);
             piece_idx += 1;
         // there is no suffix, trim the front
-        } else if (prefix_len > 0) { piece.len = prefix_len; piece_idx += 1; }
+        } else if (prefix_len > 0) { piece.setLen(prefix_len); piece_idx += 1; }
         // there is no prefix, trim the tail
-        else { piece.off += take; piece.len = suffix_len; }
+        else { piece.off += take; piece.setLen(suffix_len); }
         removed += take;
     }
 
@@ -350,7 +402,7 @@ fn deleteFromLeaf(leaf: *Node, start: InLeaf, max_remove: usize) error{OutOfMemo
     var end_range = piece_idx;
     while (end_range < pieces.items.len and removed < max_remove) : (end_range += 1) {
         piece = &pieces.items[end_range];
-        if (piece.len <= (max_remove - removed)) removed += piece.len else break;
+        if (piece.len() <= (max_remove - removed)) removed += piece.len() else break;
     }
     if (end_range > piece_idx) utils.orderedRemoveRange(Piece, pieces, piece_idx, end_range - piece_idx);
 
@@ -359,7 +411,7 @@ fn deleteFromLeaf(leaf: *Node, start: InLeaf, max_remove: usize) error{OutOfMemo
         piece = &pieces.items[piece_idx];
         take = max_remove - removed;
         piece.off += take;
-        piece.len -= take;
+        piece.shrinkBy(take);
         removed += take;
     }
 
@@ -398,7 +450,7 @@ fn transferRangeBetweenSiblings(src: *Node, dst: *Node, start: usize, count: usi
             // calculate exactly how many bytes are moving
             const to_move = src_pieces.items[start..start + count];
             var moved_bytes: usize = 0;
-            for (to_move) |*piece| { moved_bytes += piece.len; }
+            for (to_move) |*piece| { moved_bytes += piece.len(); }
 
             switch (side) {
                 .Front => try dst_pieces.insertSlice(0, to_move),
@@ -496,11 +548,14 @@ pub const TextEngine = struct {
     doc_len: usize,
     alloc: std.mem.Allocator,
 
-    pub fn init(alloc: std.mem.Allocator, original: []const u8) error{OutOfMemory}!TextEngine {
+    pub fn init(alloc: std.mem.Allocator, original: []const u8) error{OutOfMemory, FileTooLarge}!TextEngine {
+        // enforce the assertion about maximum file sizes even in release modes. 
+        const limit = @as(usize, 1) << (@bitSizeOf(usize) - 1);
+        if (original.len >= limit) return error.FileTooLarge;
         // initialize the root of the tree
         const leaf = try initLeaf(alloc);
         if (original.len != 0) {
-            try leafPieces(leaf).append(.{ .buf = .Original, .off = 0, .len = original.len });
+            try leafPieces(leaf).append(Piece.init(.Original, original.len, 0));
             leaf.weight_bytes = original.len;
         }
         return TextEngine{
@@ -592,13 +647,13 @@ pub const TextEngine = struct {
         // helper method to write all of the pieces from a given leaf
         const pieces = leafPiecesConst(leaf);
         for (pieces.items) |piece| {
-            const src = switch(piece.buf) {
+            const src = switch(piece.buf()) {
                 .Original => self.original,
                 .Add      => self.add.items,
             };
             debug.dassert(piece.off <= src.len, "piece offset must be inside it's source buffer");
-            debug.dassert(piece.len <= src.len - piece.off, "full piece slice must be inside source buffer");
-            try w.writeAll(src[piece.off..piece.off + piece.len]);
+            debug.dassert(piece.len() <= src.len - piece.off, "full piece slice must be inside source buffer");
+            try w.writeAll(src[piece.off..piece.off + piece.len()]);
         }
     }
 
@@ -640,7 +695,7 @@ pub const TextEngine = struct {
                 // calculate exactly how many bytes are moving
                 const to_move = pieces.items[mid..];
                 var moved_bytes: usize = 0;
-                for (to_move) |*piece| { moved_bytes += piece.len; }
+                for (to_move) |*piece| { moved_bytes += piece.len(); }
                 // move them
                 try leafPieces(right).appendSlice(to_move);
                 pieces.shrinkRetainingCapacity(mid);
