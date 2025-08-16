@@ -25,9 +25,30 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/utils/debug.zig"),
         .target = target
     });
-    const traits_mod = b.addModule("traits", .{
-        .root_source_file = b.path("src/utils/traits.zig"),
+    const utils_mod = b.addModule("utils", .{
+        .root_source_file = b.path("src/utils/utils.zig"),
         .target = target
+    });
+    utils_mod.addImport("debug", debug_mod);
+
+    const ref_engine_mod = b.addModule("ref_engine", .{
+        .root_source_file = b.path("src/tools/ref_text_engine.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "debug", .module = debug_mod },
+            .{ .name = "utils", .module = utils_mod },
+        },
+    });
+
+    const engine_mod = b.addModule("engine", .{
+        .root_source_file = b.path("src/core/text_engine.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "debug", .module = debug_mod },
+            .{ .name = "utils", .module = utils_mod },
+        },
     });
 
     // This creates a module, which represents a collection of source files alongside
@@ -48,9 +69,13 @@ pub fn build(b: *std.Build) void {
         // Later on we'll use this module as the root module of a test executable
         // which requires us to specify a target.
         .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "debug", .module = debug_mod },
+            .{ .name = "utils", .module = utils_mod },
+            .{ .name = "engine", .module = engine_mod },
+        },
     });
-    mod.addImport("debug", debug_mod);
-    mod.addImport("traits", traits_mod);
 
     // Here we define an executable. An executable needs to have a root module
     // which needs to expose a `main` function. While we could add a main function
@@ -99,6 +124,22 @@ pub fn build(b: *std.Build) void {
     // step). By default the install prefix is `zig-out/` but can be overridden
     // by passing `--prefix` or `-p`.
     b.installArtifact(exe);
+
+    const fixture_gen = b.addExecutable(.{
+        .name = "test-engine",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/tools/test_engine.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "debug", .module = debug_mod },
+                .{ .name = "utils", .module = utils_mod },
+                .{ .name = "ref_engine", .module = ref_engine_mod },
+                .{ .name = "engine", .module = engine_mod },
+            },
+        }),
+    });
+    b.installArtifact(fixture_gen);
 
     // This creates a top level step. Top level steps have a name and can be
     // invoked by name when running `zig build` (e.g. `zig build run`).
