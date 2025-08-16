@@ -326,12 +326,13 @@ pub fn parseFixtureFromPath(parent_alloc: std.mem.Allocator, path: []const u8) !
 // -------------------- CLI IMPLEMENTATION --------------------
 
 fn printUsage(cmd: [:0]u8) !void {
-    try utils.printf("There are two accepted usage cases:\n", .{});
+    try utils.printf("There are three accepted usage cases:\n", .{});
     try utils.printf("\tgenerate fixture:\t{s} generate <path_in> <insert %> <long %> <# ops> <path_out>\n", .{ cmd });
     try utils.printf("\ttest with fixture:\t{s} test <path_in>\n", .{ cmd });
+    try utils.printf("\ttest all fixtures:\t{s} test all\n", .{ cmd });
 }
 
-fn fixtureGeneration(a: std.mem.Allocator, args: [][:0]u8) !void {
+pub fn fixtureGeneration(a: std.mem.Allocator, args: [][:0]u8) !void {
     const path_in = args[2];
     const path_out = args[6];
     const cfg = GenConfig{ 
@@ -351,8 +352,7 @@ fn fixtureGeneration(a: std.mem.Allocator, args: [][:0]u8) !void {
     try writeFixtureToPath(a, path_out, &fixture);
 }
 
-fn testFixture(a: std.mem.Allocator, args: [][:0]u8) !bool {
-    const path_in = args[2];
+pub fn testFixture(a: std.mem.Allocator, path_in: []const u8) !bool {
     try utils.printf("Beginning to parse {s} ... ", .{ path_in });
     var timer = try std.time.Timer.start();
     var fixture = try parseFixtureFromPath(a, path_in);
@@ -397,5 +397,20 @@ pub fn main() !void {
     }
 
     if (args.len == 7) { try fixtureGeneration(alloc, args); }
-    else { _ = try testFixture(alloc, args); }
+    else if (std.mem.eql(u8, "all", args[2])) {
+        var cwd = try std.fs.cwd().openDir("fixtures", .{ .iterate = true });
+        defer cwd.close();
+        var it = cwd.iterate();
+        while (try it.next()) |entry| {
+            switch (entry.kind) {
+                .file => {
+                    if (!std.mem.endsWith(u8, entry.name, "test.txt")) continue;
+                    const rel_path = try std.fmt.allocPrint(alloc, "./fixtures/{s}", .{ entry.name });
+                    defer alloc.free(rel_path);
+                    _ = try testFixture(alloc, rel_path);
+                },
+                else => {},
+            }
+        }
+    } else { _ = try testFixture(alloc, args[2]); }
 }
