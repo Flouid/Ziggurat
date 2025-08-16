@@ -353,7 +353,7 @@ pub fn fixtureGeneration(a: std.mem.Allocator, args: [][:0]u8) !void {
 }
 
 pub fn testFixture(a: std.mem.Allocator, path_in: []const u8) !bool {
-    try utils.printf("Beginning to parse {s} ... ", .{ path_in });
+    try utils.printf("Parsing {s} ... ", .{ path_in });
     var timer = try std.time.Timer.start();
     var fixture = try parseFixtureFromPath(a, path_in);
     defer fixture.deinit();

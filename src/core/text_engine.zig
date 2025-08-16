@@ -31,9 +31,9 @@ const Piece = struct {
 // -------------------- ROPE IMPLEMENTATION --------------------
 
 const MAX_BRANCH = 64;
-const MIN_BRANCH = 24;
+const MIN_BRANCH = 8;
 const MAX_PIECES = 64;
-const MIN_PIECES = 24;
+const MIN_PIECES = 8;
 const MAX_ITER = 1_000;
 
 const Node = struct {
