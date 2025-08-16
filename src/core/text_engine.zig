@@ -27,7 +27,7 @@ const Piece = struct {
 
     // HOWEVER...
     // On a 64-bit system, 2 usizes and an enum are 8 + 8 + 1 bytes, alignment rounds up to 24(!) bytes.
-    // the buffer flag is really just one bit. Taking that bit from len and accepting that documents must
+    // The buffer flag is really just one bit. Taking that bit from len and accepting that documents must
     // be at MOST 1/2 of the systems virtual memory (2GB on 32bit) allows us to do some packing.
     // With this implementation, pieces are now just 2 usizes, 16 bytes! 33% smaller.
     // This allows for better cache locality and in optimized releases speeds things up by 20-30%!
@@ -36,7 +36,6 @@ const Piece = struct {
 
     const hi_bit = @as(usize, 1) << (@bitSizeOf(usize) - 1);
     const len_mask = ~hi_bit;
-    const max_len = len_mask;
 
     inline fn len(self: Piece) usize {
         return self.len_and_buf & len_mask;
