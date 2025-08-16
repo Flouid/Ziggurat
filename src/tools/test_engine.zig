@@ -65,10 +65,14 @@ const TestFixture = struct {
 // -------------------- TEST RUNNER IMPLEMENTATION --------------------
 
 fn replayWithEngine(comptime Engine: type, alloc: std.mem.Allocator, init_text: []const u8, ops: []const TextOp) ![]const u8 {
+    try utils.printf("Initializing text engine ... ", .{});
+    var timer = try std.time.Timer.start();
     var editor = try Engine.init(alloc, init_text);
     defer editor.deinit();
+    const init_ns = timer.read();
+    try utils.printf("Completed in {d} ms\n", .{ init_ns / 1_000_000 });
 
-    var timer = try std.time.Timer.start();
+    timer.reset();
     for (ops, 0..) |op, i| {
         if (i % 1000 == 0) try utils.printf("Performing Ops: {d: >7} / {d: >7}\r", .{ i, ops.len });
         switch(op.op) {

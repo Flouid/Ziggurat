@@ -89,7 +89,7 @@ const Node = struct {
     weight_bytes: usize = 0,
     // we want to avoid O(n) scan on document load. Permitting negative line weights allows us
     // to track negative updates (deletes) without eagerly scanning
-    weight_lines: isize = 0,
+    weight_lines: usize = 0,
     // tagged union makes mutual exclusivity between node types explicit.
     // also keeps node size as small as possible by not storing two headers
     children: union(enum) {
@@ -375,7 +375,7 @@ fn bubbleByteDelta(node: *Node, delta: usize, is_neg: bool) void {
     }
 }
 
-fn bubbleLineDelta(node: *Node, delta: isize) void {
+fn bubbleLineDelta(node: *Node, delta: usize) void {
     var cur: ?*Node = node;
     while (cur) |n| {
         n.weight_lines += delta;
@@ -410,7 +410,7 @@ fn planBorrow(node: *Node, siblings: Siblings) BorrowPlan {
 
 // -------------------- LAZY LINE INDEXING IMPLEMENTATION --------------------
 
-const PAGE_SIZE = 32 * 1024;
+const PAGE_SIZE = 4 * 1024;
 
 const NewLineIndex = struct {
     // Real-world navigation in documents is generally line-centric. 
@@ -418,12 +418,12 @@ const NewLineIndex = struct {
     // Scanning the entire document on load is one option, but that's slow and we want speed.
     // Another option is lazily scanning only the portions of the document that have been touched
     done: std.ArrayList(bool),
-    prefix: std.ArrayList(isize),
+    prefix: std.ArrayList(usize),
 
     fn init(alloc: std.mem.Allocator) NewLineIndex {
         return .{ 
             .done = std.ArrayList(bool).init(alloc), 
-            .prefix = std.ArrayList(isize).init(alloc) 
+            .prefix = std.ArrayList(usize).init(alloc) 
         };
     }
 
@@ -458,7 +458,7 @@ const NewLineIndex = struct {
         self.done.items[page] = true;
     }
 
-    fn countRange(self: *NewLineIndex, buf: []const u8, start: usize, len: usize) error{OutOfMemory}!isize {
+    fn countRange(self: *NewLineIndex, buf: []const u8, start: usize, len: usize) error{OutOfMemory}!usize {
         if (len == 0) return 0;
         try self.ensureCapacityForLen(buf.len);
         const end = start + len;
@@ -467,7 +467,7 @@ const NewLineIndex = struct {
         // range inside a single page, count directly
         if (page_0 == page_1) { return countInPage(buf, start, end); }
         // generic case: we count left and right edges and middle is handled by precomputed prefixes
-        var total: isize = 0;
+        var total: usize = 0;
         const left_edge = (page_0 + 1) * PAGE_SIZE;
         total += countInPage(buf, start, left_edge);
         // ensure prefixes are counted up to and including the end page
@@ -486,9 +486,9 @@ const NewLineIndex = struct {
     }
 };
 
-inline fn countInPage(buf: []const u8, start: usize, end: usize) isize {
+inline fn countInPage(buf: []const u8, start: usize, end: usize) usize {
     // helper for directly counting newlines between a start and end value
-    var count: isize = 0;
+    var count: usize = 0;
     var idx = start;
     while (idx < end) : (idx += 1) { if (buf[idx] == '\n') count += 1; }
     return count;
@@ -514,11 +514,11 @@ pub const TextEngine = struct {
         if (original.len >= limit) return error.FileTooLarge;
         // initialize the root of the tree
         const leaf = try initLeaf(alloc);
-        if (original.len != 0) {
+        if (original.len > 0) {
             try leafPieces(leaf).append(Piece.init(.Original, original.len, 0));
             leaf.weight_bytes = original.len;
         }
-        return TextEngine{
+        var engine = TextEngine{
             .original = original,
             .add = std.ArrayList(u8).init(alloc),
             .o_idx = NewLineIndex.init(alloc),
@@ -527,6 +527,8 @@ pub const TextEngine = struct {
             .doc_len = original.len,
             .alloc = alloc,
         };
+        if (original.len > 0) leaf.weight_lines = try engine.o_idx.countRange(original, 0, original.len);
+        return engine;
     }
     
     pub fn deinit(self: *TextEngine) void {
@@ -659,6 +661,7 @@ pub const TextEngine = struct {
                 pieces.shrinkRetainingCapacity(mid);
                 // manually adjust node weights, faster than a full recompute
                 debug.dassert(node.weight_bytes >= moved.bytes, "leaf split byte size underflow");
+                debug.dassert(node.weight_lines >= moved.lines, "leaf split line size underflow");
                 node.weight_bytes -= moved.bytes;
                 node.weight_lines -= moved.lines;
                 right.weight_bytes = moved.bytes;
@@ -678,6 +681,7 @@ pub const TextEngine = struct {
                 // fix parent pointers
                 for (childList(right).items) |child| child.parent = right;
                 debug.dassert(node.weight_bytes >= moved.bytes, "node split byte size underflow");
+                debug.dassert(node.weight_lines >= moved.lines, "node split line size underflow");
                 node.weight_bytes -= moved.bytes;
                 node.weight_lines -= moved.lines;
                 right.weight_bytes = moved.bytes;
@@ -711,14 +715,14 @@ pub const TextEngine = struct {
 
     // -------------------- DELETE HELPERS --------------------
 
-    const DeleteResult = struct { bytes: usize, lines: isize };
+    const DeleteResult = struct { bytes: usize, lines: usize };
 
     fn deleteFromLeaf(self: *TextEngine, leaf: *Node, start: InLeaf, max_remove: usize) error{OutOfMemory}!DeleteResult {
         // attempt to delete at most max_remove bytes from the current leaf.
         // return the total number that could be deleted, deletion may go into another node.
         var pieces = leafPieces(leaf);
         var removed_bytes: usize = 0;
-        var removed_lines: isize = 0;
+        var removed_lines: usize = 0;
         var piece_idx = start.piece_idx;
         const prefix_len = start.offset;
         if (piece_idx >= pieces.items.len) return .{ .bytes = 0, .lines = 0};
@@ -917,25 +921,25 @@ pub const TextEngine = struct {
 
     // -------------------- LINE COUNT HELPERS --------------------
 
-    fn countLinesInPiece(self: *TextEngine, p: *Piece) error{OutOfMemory}!isize {
+    fn countLinesInPiece(self: *TextEngine, p: *Piece) error{OutOfMemory}!usize {
         switch (p.buf()) {
             .Original => return self.o_idx.countRange(self.original, p.off, p.len()),
             .Add      => return self.a_idx.countRange(self.add.items, p.off, p.len()),
         }
     }
 
-    fn countLinesInPieceRange(self: *TextEngine, p: *Piece, offset: usize, len: usize) !isize {
+    fn countLinesInPieceRange(self: *TextEngine, p: *Piece, offset: usize, len: usize) !usize {
         switch (p.buf()) {
             .Original => return self.o_idx.countRange(self.original, p.off + offset, len),
             .Add      => return self.a_idx.countRange(self.add.items, p.off + offset, len),
         }
     }
 
-    const MoveResult = struct { bytes: usize, lines: isize };
+    const MoveResult = struct { bytes: usize, lines: usize };
 
     fn countMovedPieces(self: *TextEngine, to_move: []Piece) error{OutOfMemory}!MoveResult {
         var moved_bytes: usize = 0;
-        var moved_lines: isize = 0;
+        var moved_lines: usize = 0;
         for (to_move) |*piece| { 
             moved_bytes += piece.len();
             moved_lines += try self.countLinesInPiece(piece);
@@ -945,7 +949,7 @@ pub const TextEngine = struct {
 
     fn countMovedNodes(to_move: []*Node) MoveResult {
         var moved_bytes: usize = 0;
-        var moved_lines: isize = 0;
+        var moved_lines: usize = 0;
         for (to_move) |node| { 
             moved_bytes += node.weight_bytes; 
             moved_lines += node.weight_lines;
