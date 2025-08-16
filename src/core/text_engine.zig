@@ -85,8 +85,11 @@ const MAX_ITER = 1_000;
 const Node = struct {
     // The "table" in piece table is actually a rope implemented as a b-tree.
     // This allows for O(log n) searching, insertion, and deletion anywhere
-    parent: ?*Node,
-    weight_bytes: usize,
+    parent: ?*Node = null,
+    weight_bytes: usize = 0,
+    // we want to avoid O(n) scan on document load. Permitting negative line weights allows us
+    // to track negative updates (deletes) without eagerly scanning
+    weight_lines: isize = 0,
     // tagged union makes mutual exclusivity between node types explicit.
     // also keeps node size as small as possible by not storing two headers
     children: union(enum) {
@@ -116,8 +119,6 @@ const InLeaf = struct {
 fn initLeaf(alloc: std.mem.Allocator) error{OutOfMemory}!*Node {
     const node = try alloc.create(Node);
     node.* = .{
-        .parent = null,
-        .weight_bytes = 0,
         .children = .{ 
             .leaf = std.ArrayList(Piece).init(alloc)
         },
@@ -128,8 +129,6 @@ fn initLeaf(alloc: std.mem.Allocator) error{OutOfMemory}!*Node {
 fn initInternal(alloc: std.mem.Allocator) error{OutOfMemory}!*Node {
     const node = try alloc.create(Node);
     node.* = .{
-        .parent = null,
-        .weight_bytes = 0,
         .children = .{
             .internal = std.ArrayList(*Node).init(alloc)
         },
@@ -364,122 +363,23 @@ fn spliceIntoLeaf(pieces: *std.ArrayList(Piece), loc: InLeaf, add_off: usize, ad
     }
 }
 
-fn deleteFromLeaf(leaf: *Node, start: InLeaf, max_remove: usize) error{OutOfMemory}!usize {
-    // attempt to delete at most max_remove bytes from the current leaf.
-    // return the total number that could be deleted, deletion may go into another node.
-    var pieces = leafPieces(leaf);
-    var removed: usize = 0;
-    var piece_idx = start.piece_idx;
-    const prefix_len = start.offset;
-    if (piece_idx >= pieces.items.len) return 0;
-    // handle the current (first) piece
-    var piece = &pieces.items[piece_idx];
-    var take = @min(max_remove, piece.len() - prefix_len);
-    // we can't just delete the entire thing
-    if (prefix_len > 0 or take < piece.len()) {
-        const suffix_len = piece.len() - prefix_len - take;
-        // delete the middle of the piece
-        if (prefix_len > 0 and suffix_len > 0) {
-            piece.setLen(prefix_len);
-            var suffix = piece.*;
-            suffix.off += prefix_len + take;
-            suffix.setLen(suffix_len);
-            try pieces.insert(piece_idx + 1, suffix);
-            piece_idx += 1;
-        // there is no suffix, trim the front
-        } else if (prefix_len > 0) { piece.setLen(prefix_len); piece_idx += 1; }
-        // there is no prefix, trim the tail
-        else { piece.off += take; piece.setLen(suffix_len); }
-        removed += take;
-    }
-    // if applicable, remove entire middle pieces, coalesce into one big delete at the end
-    var end_range = piece_idx;
-    while (end_range < pieces.items.len and removed < max_remove) : (end_range += 1) {
-        piece = &pieces.items[end_range];
-        if (piece.len() <= (max_remove - removed)) removed += piece.len() else break;
-    }
-    if (end_range > piece_idx) utils.orderedRemoveRange(Piece, pieces, piece_idx, end_range - piece_idx);
-    // we may still need to remove the front of one final piece
-    if (piece_idx < pieces.items.len and removed < max_remove) {
-        piece = &pieces.items[piece_idx];
-        take = max_remove - removed;
-        piece.off += take;
-        piece.shrinkBy(take);
-        removed += take;
-    }
-    // if there are still pieces left, perform a local coalesce before returning
-    if (pieces.items.len == 0) return removed;
-    if (piece_idx == pieces.items.len) piece_idx -= 1;
-    mergeAround(leaf, piece_idx);
-    return removed;
-}
-
-fn bubbleDelta(node: *Node, delta: usize, is_neg: bool) void {
-    // propagate a change in weight up the tree
+fn bubbleByteDelta(node: *Node, delta: usize, is_neg: bool) void {
+    // propagate a change in byte weight up the tree
     var cur: ?*Node = node;
     while (cur) |n| {
         if (is_neg) {
-            debug.dassert(n.weight_bytes >= delta, "cannot give a node a negative weight");
+            debug.dassert(n.weight_bytes >= delta, "cannot give a node a negative byte weight");
             n.weight_bytes -= delta;
-        } else {
-            n.weight_bytes += delta;
-        }
+        } else { n.weight_bytes += delta; }
         cur = n.parent;
     }
 }
 
-fn transferRangeBetweenSiblings(src: *Node, dst: *Node, start: usize, count: usize, side: enum{Front, Back}) error{OutOfMemory}!void {
-    debug.dassert(count > 0, "cannot transfer 0 nodes between siblings");
-    debug.dassert(std.meta.activeTag(src.children) == std.meta.activeTag(dst.children), "source and destination must be the same type of node");
-    debug.dassert(start == 0 or start + count == nodeCount(src), "insertions must be contiguous with start or end of source");
-    switch (src.children) {
-        .leaf => {
-            const src_pieces = leafPieces(src);
-            const dst_pieces = leafPieces(dst);
-            debug.dassert(src_pieces.items.len >= count, "source must contain enough items to transfer");
-            debug.dassert(dst_pieces.items.len > 0, "destination must not start empty");
-            // calculate exactly how many bytes are moving
-            const to_move = src_pieces.items[start..start + count];
-            var moved_bytes: usize = 0;
-            for (to_move) |*piece| { moved_bytes += piece.len(); }
-            switch (side) {
-                .Front => try dst_pieces.insertSlice(0, to_move),
-                .Back  => try dst_pieces.appendSlice(to_move),
-            }
-            _ = utils.orderedRemoveRange(Piece, src_pieces, start, count);
-            // check for new merge opportunities
-            const center: usize = switch (side) {
-                .Front => count,
-                .Back  => dst_pieces.items.len - count
-            };
-            mergeAround(dst, center);
-            bubbleDelta(src, moved_bytes, true);
-            bubbleDelta(dst, moved_bytes, false);
-        },
-        .internal => {
-            const src_children = childList(src);
-            const dst_children = childList(dst);
-            debug.dassert(src_children.items.len >= count, "source must contain enough items to transfer");
-            debug.dassert(dst_children.items.len > 0, "destination must not start empty");
-            // calculate exactly how many bytes are moving
-            const to_move = src_children.items[start..start + count];
-            var moved_bytes: usize = 0;
-            for (to_move) |node| { moved_bytes += node.weight_bytes; }
-
-            switch (side) {
-                .Front => try dst_children.insertSlice(0, to_move),
-                .Back  => try dst_children.appendSlice(to_move),
-            }
-            _ = utils.orderedRemoveRange(*Node, src_children, start, count);
-            // fix parent pointers for moved children
-            const adopted = switch (side) {
-                .Front => dst_children.items[0..count],
-                .Back  => dst_children.items[dst_children.items.len - count..]
-            };
-            for (adopted) |child| child.parent = dst;
-            bubbleDelta(src, moved_bytes, true);
-            bubbleDelta(dst, moved_bytes, false);
-        }
+fn bubbleLineDelta(node: *Node, delta: isize) void {
+    var cur: ?*Node = node;
+    while (cur) |n| {
+        n.weight_lines += delta;
+        cur = n.parent;
     }
 }
 
@@ -508,20 +408,90 @@ fn planBorrow(node: *Node, siblings: Siblings) BorrowPlan {
     return .{ .take_left = take_left, .take_right = take_right };
 }
 
-fn tryBorrow(node: *Node, siblings: Siblings) error{OutOfMemory}!usize {
-    // uses a borrow plan to take exactly as many nodes from neighbors as can be spared
-    const plan = planBorrow(node, siblings);
-    if (siblings.l) |left| {
-        if (plan.take_left > 0) { 
-            try transferRangeBetweenSiblings(left, node, nodeCount(left) - plan.take_left, plan.take_left, .Front);
+// -------------------- LAZY LINE INDEXING IMPLEMENTATION --------------------
+
+const PAGE_SIZE = 32 * 1024;
+
+const NewLineIndex = struct {
+    // Real-world navigation in documents is generally line-centric. 
+    // Obviously then, we need a way of representing where the line breaks are to support O(log n) lookup.
+    // Scanning the entire document on load is one option, but that's slow and we want speed.
+    // Another option is lazily scanning only the portions of the document that have been touched
+    done: std.ArrayList(bool),
+    prefix: std.ArrayList(isize),
+
+    fn init(alloc: std.mem.Allocator) NewLineIndex {
+        return .{ 
+            .done = std.ArrayList(bool).init(alloc), 
+            .prefix = std.ArrayList(isize).init(alloc) 
+        };
+    }
+
+    fn deinit(self: *NewLineIndex) void {
+        self.done.deinit();
+        self.prefix.deinit();
+    }
+
+    fn ensureCapacityForLen(self: *NewLineIndex, buf_len: usize) error{OutOfMemory}!void {
+        // make sure there are enough pages to account for a given buffer size
+        const pages = std.math.divCeil(usize, buf_len, PAGE_SIZE) catch unreachable;
+        const len = self.done.items.len;
+        debug.dassert(self.prefix.items.len == len, "done and prefix length must match");
+        if (pages > len) {
+            const add = pages - len;
+            const new_done = try self.done.addManyAsSlice(add);
+            _ = try self.prefix.addManyAsSlice(add);
+            // new pages have not been counted yet
+            @memset(new_done, false);
         }
     }
-    if (siblings.r) |right| {
-        if (plan.take_right > 0) {
-            try transferRangeBetweenSiblings(right, node, 0, plan.take_right, .Back);
-        }
+
+    fn ensurePage(self: *NewLineIndex, buf: []const u8, page: usize) void {
+        // ensure that the current page has been counted
+        debug.dassert(page < self.done.items.len, "page index higher than cache length");
+        if (self.done.items[page]) return;
+        const start = page * PAGE_SIZE;
+        const end = @min(start + PAGE_SIZE, buf.len);
+        const count = countInPage(buf, start, end);
+        const prev = if (page == 0) 0 else self.prefix.items[page - 1];
+        self.prefix.items[page] = prev + count;
+        self.done.items[page] = true;
     }
-    return plan.take_left + plan.take_right;
+
+    fn countRange(self: *NewLineIndex, buf: []const u8, start: usize, len: usize) error{OutOfMemory}!isize {
+        if (len == 0) return 0;
+        try self.ensureCapacityForLen(buf.len);
+        const end = start + len;
+        const page_0 = start / PAGE_SIZE;
+        const page_1 = (end - 1) / PAGE_SIZE;
+        // range inside a single page, count directly
+        if (page_0 == page_1) { return countInPage(buf, start, end); }
+        // generic case: we count left and right edges and middle is handled by precomputed prefixes
+        var total: isize = 0;
+        const left_edge = (page_0 + 1) * PAGE_SIZE;
+        total += countInPage(buf, start, left_edge);
+        // ensure prefixes are counted up to and including the end page
+        var page = page_0;
+        while (page <= page_1) : (page += 1) self.ensurePage(buf, page);
+        // use prefix differences for interior pages
+        if (page_1 > page_0 + 1) {
+            const prefix_end = self.prefix.items[page_1 - 1];
+            const prefix_start = self.prefix.items[page_0];
+            total += prefix_end - prefix_start;
+        }
+        // right partial page
+        const right_edge = page_1 * PAGE_SIZE;
+        total += countInPage(buf, right_edge, end);
+        return total;
+    }
+};
+
+inline fn countInPage(buf: []const u8, start: usize, end: usize) isize {
+    // helper for directly counting newlines between a start and end value
+    var count: isize = 0;
+    var idx = start;
+    while (idx < end) : (idx += 1) { if (buf[idx] == '\n') count += 1; }
+    return count;
 }
 
 // -------------------- PIECE TABLE IMPLEMENTATION --------------------
@@ -532,6 +502,8 @@ pub const TextEngine = struct {
     // holds a collection of ordered "pieces" which describe how to build a final document using the two buffers.
     original: []const u8,
     add: std.ArrayList(u8),
+    o_idx: NewLineIndex,
+    a_idx: NewLineIndex,
     root: *Node,
     doc_len: usize,
     alloc: std.mem.Allocator,
@@ -549,6 +521,8 @@ pub const TextEngine = struct {
         return TextEngine{
             .original = original,
             .add = std.ArrayList(u8).init(alloc),
+            .o_idx = NewLineIndex.init(alloc),
+            .a_idx = NewLineIndex.init(alloc),
             .root = leaf,
             .doc_len = original.len,
             .alloc = alloc,
@@ -557,6 +531,8 @@ pub const TextEngine = struct {
     
     pub fn deinit(self: *TextEngine) void {
         self.add.deinit();
+        self.o_idx.deinit();
+        self.a_idx.deinit();
         freeTree(self.alloc, self.root);
     }
 
@@ -565,20 +541,24 @@ pub const TextEngine = struct {
         debug.dassert(text.len > 0, "cannot insert empty text");
         const add_offset = self.add.items.len;
         try self.add.appendSlice(text);
+        // count how many newlines just got added
+        const newlines = try self.a_idx.countRange(self.add.items, add_offset, text.len);
         // find the leaf node that corresponds to the insertion index
         const found = findAt(self.root, at);
         const leaf = found.leaf;
         const pieces = leafPieces(leaf);
         // under the ideal case, new edits are appended to the end and extend an existing piece
         if (fastAppendIfPossible(leaf, add_offset, text.len, at, self.doc_len)) {
-            bubbleDelta(leaf, text.len, false);
+            bubbleByteDelta(leaf, text.len, false);
+            bubbleLineDelta(leaf, newlines);
             self.doc_len += text.len;
             return;
         }
         const loc = locateInLeaf(leaf, found.offset);
         const idx = try spliceIntoLeaf(pieces, loc, add_offset, text.len);
         mergeAround(leaf, idx);
-        bubbleDelta(leaf, text.len, false);
+        bubbleByteDelta(leaf, text.len, false);
+        bubbleLineDelta(leaf, newlines);
         try self.bubbleOverflowUp(leaf);
         self.doc_len += text.len;
     }
@@ -593,9 +573,10 @@ pub const TextEngine = struct {
         const left: *Node = leaf;
         while (remaining > 0) {
             const in_leaf = locateInLeaf(leaf, offset);
-            const removed = try deleteFromLeaf(leaf, in_leaf, remaining);
-            bubbleDelta(leaf, removed, true);
-            remaining -= removed;
+            const removed = try self.deleteFromLeaf(leaf, in_leaf, remaining);
+            bubbleByteDelta(leaf, removed.bytes, true);
+            bubbleLineDelta(leaf, removed.lines);
+            remaining -= removed.bytes;
             offset = 0;
             const next_leaf = nextLeaf(leaf);
             if (remaining > 0) {
@@ -670,17 +651,18 @@ pub const TextEngine = struct {
                 // split half of the pieces into a new sibling
                 const mid = pieces.items.len / 2;
                 const right = try initLeaf(self.alloc);
-                // calculate exactly how many bytes are moving
+                // calculate exactly how many bytes and lines are moving
                 const to_move = pieces.items[mid..];
-                var moved_bytes: usize = 0;
-                for (to_move) |*piece| { moved_bytes += piece.len(); }
+                const moved = try self.countMovedPieces(to_move);
                 // move them
                 try leafPieces(right).appendSlice(to_move);
                 pieces.shrinkRetainingCapacity(mid);
                 // manually adjust node weights, faster than a full recompute
-                debug.dassert(node.weight_bytes >= moved_bytes, "leaf split size underflow");
-                node.weight_bytes -= moved_bytes;
-                right.weight_bytes = moved_bytes;
+                debug.dassert(node.weight_bytes >= moved.bytes, "leaf split byte size underflow");
+                node.weight_bytes -= moved.bytes;
+                node.weight_lines -= moved.lines;
+                right.weight_bytes = moved.bytes;
+                right.weight_lines = moved.lines;
                 // add the newly split node into the tree
                 return self.spliceNodeInTree(node, right);
             },
@@ -690,15 +672,16 @@ pub const TextEngine = struct {
                 const mid = children.items.len / 2;
                 const right = try initInternal(self.alloc);
                 const to_move = children.items[mid..];
-                var moved_bytes: usize = 0;
-                for (to_move) |n| { moved_bytes += n.weight_bytes; }
+                const moved = countMovedNodes(to_move);
                 try childList(right).appendSlice(to_move);
                 children.shrinkRetainingCapacity(mid);
                 // fix parent pointers
                 for (childList(right).items) |child| child.parent = right;
-                debug.dassert(node.weight_bytes >= moved_bytes, "leaf split size underflow");
-                node.weight_bytes -= moved_bytes;
-                right.weight_bytes = moved_bytes;
+                debug.dassert(node.weight_bytes >= moved.bytes, "node split byte size underflow");
+                node.weight_bytes -= moved.bytes;
+                node.weight_lines -= moved.lines;
+                right.weight_bytes = moved.bytes;
+                right.weight_lines = moved.lines;
                 return self.spliceNodeInTree(node, right);
             }
         }
@@ -720,12 +703,144 @@ pub const TextEngine = struct {
             old.parent = root;
             new.parent = root;
             root.weight_bytes = old.weight_bytes + new.weight_bytes;
+            root.weight_lines = old.weight_lines + new.weight_lines;
             self.root = root;
             return null;
         }
     }
 
     // -------------------- DELETE HELPERS --------------------
+
+    const DeleteResult = struct { bytes: usize, lines: isize };
+
+    fn deleteFromLeaf(self: *TextEngine, leaf: *Node, start: InLeaf, max_remove: usize) error{OutOfMemory}!DeleteResult {
+        // attempt to delete at most max_remove bytes from the current leaf.
+        // return the total number that could be deleted, deletion may go into another node.
+        var pieces = leafPieces(leaf);
+        var removed_bytes: usize = 0;
+        var removed_lines: isize = 0;
+        var piece_idx = start.piece_idx;
+        const prefix_len = start.offset;
+        if (piece_idx >= pieces.items.len) return .{ .bytes = 0, .lines = 0};
+        // handle the current (first) piece
+        var piece = &pieces.items[piece_idx];
+        var take = @min(max_remove, piece.len() - prefix_len);
+        // if we can't just delete the entire thing
+        if (prefix_len > 0 or take < piece.len()) {
+            removed_lines += try self.countLinesInPieceRange(piece, prefix_len, take);
+            const suffix_len = piece.len() - prefix_len - take;
+            // delete lands in the middle of the piece
+            if (prefix_len > 0 and suffix_len > 0) {
+                piece.setLen(prefix_len);
+                var suffix = piece.*;
+                suffix.off += prefix_len + take;
+                suffix.setLen(suffix_len);
+                try pieces.insert(piece_idx + 1, suffix);
+                piece_idx += 1;
+            // there is no suffix, trim the front
+            } else if (prefix_len > 0) { piece.setLen(prefix_len); piece_idx += 1; }
+            // there is no prefix, trim the tail
+            else { piece.off += take; piece.setLen(suffix_len); }
+            removed_bytes += take;
+        }
+        // if applicable, remove entire middle pieces, coalesce into one big delete at the end
+        var end_range = piece_idx;
+        while (end_range < pieces.items.len and removed_bytes < max_remove) : (end_range += 1) {
+            piece = &pieces.items[end_range];
+            const can_take = @min(piece.len(), max_remove - removed_bytes);
+            if (can_take < piece.len()) break;
+            removed_bytes += piece.len();
+            removed_lines += try self.countLinesInPiece(piece);
+        }
+        if (end_range > piece_idx) utils.orderedRemoveRange(Piece, pieces, piece_idx, end_range - piece_idx);
+        // we may still need to remove the front of one final piece
+        if (piece_idx < pieces.items.len and removed_bytes < max_remove) {
+            piece = &pieces.items[piece_idx];
+            take = max_remove - removed_bytes;
+            removed_lines += try self.countLinesInPieceRange(piece, 0, take);
+            piece.off += take;
+            piece.shrinkBy(take);
+            removed_bytes += take;
+        }
+        // if there are still pieces left, perform a local coalesce before returning
+        const removed = DeleteResult{ .bytes = removed_bytes, .lines = removed_lines };
+        if (pieces.items.len == 0) return removed;
+        if (piece_idx == pieces.items.len) piece_idx -= 1;
+        mergeAround(leaf, piece_idx);
+        return removed;
+    }
+
+    fn transferRangeBetweenSiblings(self: *TextEngine, src: *Node, dst: *Node, start: usize, count: usize, side: enum{Front, Back}) error{OutOfMemory}!void {
+        debug.dassert(count > 0, "cannot transfer 0 nodes between siblings");
+        debug.dassert(std.meta.activeTag(src.children) == std.meta.activeTag(dst.children), "source and destination must be the same type of node");
+        debug.dassert(start == 0 or start + count == nodeCount(src), "insertions must be contiguous with start or end of source");
+        switch (src.children) {
+            .leaf => {
+                const src_pieces = leafPieces(src);
+                const dst_pieces = leafPieces(dst);
+                debug.dassert(src_pieces.items.len >= count, "source must contain enough items to transfer");
+                debug.dassert(dst_pieces.items.len > 0, "destination must not start empty");
+                // calculate exactly how many bytes and lines are moving
+                const to_move = src_pieces.items[start..start + count];
+                const moved = try self.countMovedPieces(to_move);           
+                switch (side) {
+                    .Front => try dst_pieces.insertSlice(0, to_move),
+                    .Back  => try dst_pieces.appendSlice(to_move),
+                }
+                _ = utils.orderedRemoveRange(Piece, src_pieces, start, count);
+                // check for new merge opportunities
+                const center: usize = switch (side) {
+                    .Front => count,
+                    .Back  => dst_pieces.items.len - count
+                };
+                mergeAround(dst, center);
+                bubbleByteDelta(src, moved.bytes, true);
+                bubbleByteDelta(dst, moved.bytes, false);
+                bubbleLineDelta(src, moved.lines);
+                bubbleLineDelta(dst, moved.lines);
+            },
+            .internal => {
+                const src_children = childList(src);
+                const dst_children = childList(dst);
+                debug.dassert(src_children.items.len >= count, "source must contain enough items to transfer");
+                debug.dassert(dst_children.items.len > 0, "destination must not start empty");
+                // calculate exactly how many bytes and lines are moving
+                const to_move = src_children.items[start..start + count];
+                const moved = countMovedNodes(to_move);
+                switch (side) {
+                    .Front => try dst_children.insertSlice(0, to_move),
+                    .Back  => try dst_children.appendSlice(to_move),
+                }
+                _ = utils.orderedRemoveRange(*Node, src_children, start, count);
+                // fix parent pointers for moved children
+                const adopted = switch (side) {
+                    .Front => dst_children.items[0..count],
+                    .Back  => dst_children.items[dst_children.items.len - count..]
+                };
+                for (adopted) |child| child.parent = dst;
+                bubbleByteDelta(src, moved.bytes, true);
+                bubbleByteDelta(dst, moved.bytes, false);
+                bubbleLineDelta(src, moved.lines);
+                bubbleLineDelta(dst, moved.lines);
+            }
+        }
+    }
+
+    fn tryBorrow(self: *TextEngine, node: *Node, siblings: Siblings) error{OutOfMemory}!usize {
+        // uses a borrow plan to take exactly as many nodes from neighbors as can be spared
+        const plan = planBorrow(node, siblings);
+        if (siblings.l) |left| {
+            if (plan.take_left > 0) { 
+                try self.transferRangeBetweenSiblings(left, node, nodeCount(left) - plan.take_left, plan.take_left, .Front);
+            }
+        }
+        if (siblings.r) |right| {
+            if (plan.take_right > 0) {
+                try self.transferRangeBetweenSiblings(right, node, 0, plan.take_right, .Back);
+            }
+        }
+        return plan.take_left + plan.take_right;
+    }
 
     fn repairAfterDelete(self: *TextEngine, left: *Node, right: *Node) error{OutOfMemory}!void {
         try self.repairUpward(left);
@@ -756,7 +871,7 @@ pub const TextEngine = struct {
                     if (try self.mergeWithSibling(right, node)) |parent| { cur = parent; continue; }
                 }
                 // failing that, try and borrow children
-                const borrowed = try tryBorrow(node, siblings);
+                const borrowed = try self.tryBorrow(node, siblings);
                 if (borrowed >= demand) { cur = node.parent; continue; }
             }
             cur = node.parent;
@@ -794,9 +909,47 @@ pub const TextEngine = struct {
 
     fn mergeWithSibling(self: *TextEngine, src: *Node, dst: *Node) error{OutOfMemory}!?*Node {
         if (nodeCount(src) + nodeCount(dst) > nodeMax(dst)) return null;
-        try transferRangeBetweenSiblings(src, dst, 0, nodeCount(src), .Back);
+        try self.transferRangeBetweenSiblings(src, dst, 0, nodeCount(src), .Back);
         const parent = src.parent.?;
         self.infanticide(parent, src);
         return parent;
+    }
+
+    // -------------------- LINE COUNT HELPERS --------------------
+
+    fn countLinesInPiece(self: *TextEngine, p: *Piece) error{OutOfMemory}!isize {
+        switch (p.buf()) {
+            .Original => return self.o_idx.countRange(self.original, p.off, p.len()),
+            .Add      => return self.a_idx.countRange(self.add.items, p.off, p.len()),
+        }
+    }
+
+    fn countLinesInPieceRange(self: *TextEngine, p: *Piece, offset: usize, len: usize) !isize {
+        switch (p.buf()) {
+            .Original => return self.o_idx.countRange(self.original, p.off + offset, len),
+            .Add      => return self.a_idx.countRange(self.add.items, p.off + offset, len),
+        }
+    }
+
+    const MoveResult = struct { bytes: usize, lines: isize };
+
+    fn countMovedPieces(self: *TextEngine, to_move: []Piece) error{OutOfMemory}!MoveResult {
+        var moved_bytes: usize = 0;
+        var moved_lines: isize = 0;
+        for (to_move) |*piece| { 
+            moved_bytes += piece.len();
+            moved_lines += try self.countLinesInPiece(piece);
+        }
+        return .{ .bytes = moved_bytes, .lines = moved_lines };   
+    }
+
+    fn countMovedNodes(to_move: []*Node) MoveResult {
+        var moved_bytes: usize = 0;
+        var moved_lines: isize = 0;
+        for (to_move) |node| { 
+            moved_bytes += node.weight_bytes; 
+            moved_lines += node.weight_lines;
+        }
+        return .{ .bytes = moved_bytes, .lines = moved_lines }; 
     }
 };
