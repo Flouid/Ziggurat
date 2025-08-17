@@ -459,6 +459,7 @@ const NewLineIndex = struct {
         // ensure that the current page has been counted
         debug.dassert(page < self.done.items.len, "page index higher than cache length");
         if (self.done.items[page]) return;
+        if (page > 0 and !self.done.items[page - 1]) self.ensurePage(buf, page - 1);
         const start = page * PAGE_SIZE;
         const end = @min(start + PAGE_SIZE, buf.len);
         const count = countInPage(buf, start, end);
