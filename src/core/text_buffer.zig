@@ -210,14 +210,12 @@ fn findAt(root: *Node, at: usize) Found {
                     if (idx < weight) break;
                     idx -= weight;
                 }
-                // if the node walked to the very end, something is wrong
                 debug.dassert(i < len, "failed to find index");
-                // items[i].weight_bytes <= idx < items[i+1].weight_bytes
                 node = items[i];
             },
         }
     }
-    unreachable;
+    @panic("max iterations reached without finding index in document");
 }
 
 const InLeaf = struct {
@@ -236,7 +234,7 @@ fn locateInLeaf(leaf: *const Node, offset: usize) InLeaf {
         if (offset < acc + piece.len()) return .{ .piece_idx = idx, .offset = offset - acc };
         acc += piece.len();
     }
-    unreachable;
+    @panic("couldn't find offset in leaf");
 }
 
 // navigation within the tree structure
@@ -608,6 +606,85 @@ pub const TextBuffer = struct {
         return self.root.weight_lines + 1;
     }
 
+    pub fn lineOfByte(self: *TextBuffer, at: usize) error{OutOfMemory}!usize {
+        // map any index in the working document to a line number
+        debug.dassert(at <= self.doc_len, "offset out of range");
+        var node = self.root;
+        var offset = at;
+        var lines_before: usize = 0;
+        var iter: usize = 0;
+        while (iter < MAX_ITER) : (iter += 1) {
+            switch (node.children) {
+                .leaf => {
+                    // count newlines in all full pieces before the offset
+                    const pieces = leafPiecesConst(node).items;
+                    var acc: usize = 0;
+                    var i: usize = 0;
+                    while (i < pieces.len and acc + pieces[i].len() <= offset) : (i += 1) {
+                        lines_before += try self.countLinesInPiece(&pieces[i]);
+                        acc          += pieces[i].len();
+                    }
+                    debug.dassert(i < pieces.len, "failed to find line");
+                    // add newlines inside the piece up to our offset
+                    lines_before += self.countLinesInPieceRange(&pieces[i], 0, offset - acc);
+                    return lines_before;
+                },
+                .internal => |*children| {
+                    var i: usize = 0;
+                    while (i < children.items.len) : (i += 1) {
+                        const child = children.items[i];
+                        if (offset < child.weight_bytes) { node = child; break; }
+                        offset       -= child.weight_bytes;
+                        lines_before += child.weight_lines;
+                    }
+                    debug.dassert(i < children.items.len, "failed to find line");
+                },
+            }
+        }
+        @panic("max iterations reached without finding index in document");
+    }
+
+    pub fn byteOfLine(self: *TextBuffer, line: usize) error{OutOfMemory}!usize {
+        // map any line number to an index in the working document
+        debug.dassert(line <= self.root.weight_lines, "line out of range");
+        var node = self.root;
+        var remaining = line;
+        var offset: usize = 0;
+        var iter: usize = 0;
+        while (iter < MAX_ITER) : (iter += 1) {
+            switch (node.children) {
+                .leaf => {
+                    const pieces = leafPiecesConst(node).items;
+                    var acc: usize = 0;
+                    var i: usize = 0;
+                    while (i < pieces.len and remaining > 0) : (i += 1) {
+                        const piece = &pieces[i];
+                        const lines_in_piece = try self.countLinesInPiece(piece);
+                        if (remaining < lines_in_piece) {
+                            return offset + acc + self.findNthNewlineInPiece(piece, remaining) + 1;
+                        } else {
+                            remaining -= lines_in_piece;
+                            acc       += piece.len();
+                        }
+                    }
+                    // edge case, newline at the very end of the piece
+                    return offset + acc;
+                },
+                .internal => |*children| {
+                    var i: usize = 0;
+                    while (i < children.items.len) : (i += 1) {
+                        const child = children.items[i];
+                        if (remaining <= child.weight_lines) { node = child; break; }
+                        remaining -= child.weight_lines;
+                        offset    += child.weight_bytes;
+                    }
+                    debug.dassert(i < children.items.len, "failed to find line");
+                }
+            }
+        }
+        @panic("max iterations reached without finding line in document");
+    }
+
     // -------------------- WRITE HELPERS --------------------
 
     fn writeSubtree(self: *TextBuffer, w: anytype, node: *const Node) @TypeOf(w).Error!void {
@@ -950,13 +1027,15 @@ pub const TextBuffer = struct {
     // -------------------- LINE COUNT HELPERS --------------------
 
     fn countLinesInPiece(self: *TextBuffer, p: *Piece) error{OutOfMemory}!usize {
+        // count all newlines in a piece
         switch (p.buf()) {
             .Original => return self.o_idx.countRange(self.original, p.off, p.len()),
             .Add => return self.a_idx.countRange(self.add.items, p.off, p.len()),
         }
     }
 
-    fn countLinesInPieceRange(self: *TextBuffer, p: *Piece, offset: usize, len: usize) !usize {
+    fn countLinesInPieceRange(self: *TextBuffer, p: *Piece, offset: usize, len: usize) error{OutOfMemory}!usize {
+        // count newlines within some subset of a piece's bytes
         switch (p.buf()) {
             .Original => return self.o_idx.countRange(self.original, p.off + offset, len),
             .Add => return self.a_idx.countRange(self.add.items, p.off + offset, len),
@@ -983,5 +1062,23 @@ pub const TextBuffer = struct {
             moved_lines += node.weight_lines;
         }
         return .{ .bytes = moved_bytes, .lines = moved_lines };
+    }
+
+    fn findNthNewlineInPiece(self: *TextBuffer, p: *const Piece, n: usize) usize {
+        // return byte offset within a piece of the n-th newline
+        const src = switch (p.buf()) {
+            .Original => self.original,
+            .Add      => self.add.items,
+        };
+        const slice = src[p.off..p.off + p.len()];
+        var i: usize = 0;
+        var seen: usize = 0;
+        while (i < slice.len) : (i += 1) {
+            if (slice[i] == '\n') {
+                seen += 1;
+                if (seen == n) return i;
+            }
+        }
+        @panic("not enough newlines in piece");
     }
 };
