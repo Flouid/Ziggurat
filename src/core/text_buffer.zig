@@ -458,14 +458,22 @@ const NewLineIndex = struct {
     fn ensurePage(self: *NewLineIndex, buf: []const u8, page: usize) void {
         // ensure that the current page has been counted
         debug.dassert(page < self.done.items.len, "page index higher than cache length");
+        debug.dassert(page < (buf.len + PAGE_SIZE - 1) / PAGE_SIZE, "page index higher than buffer maximum");
+        debug.dassert(self.done.items.len == (buf.len + PAGE_SIZE - 1) / PAGE_SIZE, "done is not the correct length");
+        debug.dassert(self.prefix.items.len == (buf.len + PAGE_SIZE - 1) / PAGE_SIZE, "done is not the correct length");
         if (self.done.items[page]) return;
-        if (page > 0 and !self.done.items[page - 1]) self.ensurePage(buf, page - 1);
-        const start = page * PAGE_SIZE;
-        const end = @min(start + PAGE_SIZE, buf.len);
-        const count = countInPage(buf, start, end);
-        const prev = if (page == 0) 0 else self.prefix.items[page - 1];
-        self.prefix.items[page] = prev + count;
-        self.done.items[page] = true;
+        // previous pages may not be filled, walk backwards until we find the last one that was
+        var idx = page;
+        while (idx > 0 and !self.done.items[idx - 1]) : (idx -= 1) {}
+        // now walk forwards again and fill until we fill the target page
+        while (idx <= page) : (idx += 1) {
+            const start = idx * PAGE_SIZE;
+            const end = @min(start + PAGE_SIZE, buf.len);
+            const count = countInSlice(buf[start..end]);
+            const prev = if (idx == 0) 0 else self.prefix.items[idx - 1];
+            self.prefix.items[idx] = prev + count;
+            self.done.items[idx] = true;
+        }
     }
 
     fn countRange(self: *NewLineIndex, buf: []const u8, start: usize, len: usize) error{OutOfMemory}!usize {
@@ -475,13 +483,11 @@ const NewLineIndex = struct {
         const page_0 = start / PAGE_SIZE;
         const page_1 = (end - 1) / PAGE_SIZE;
         // range inside a single page, count directly
-        if (page_0 == page_1) {
-            return countInPage(buf, start, end);
-        }
+        if (page_0 == page_1) return countInSlice(buf[start..end]);
         // generic case: we count left and right edges and middle is handled by precomputed prefixes
         var total: usize = 0;
         const left_edge = (page_0 + 1) * PAGE_SIZE;
-        total += countInPage(buf, start, left_edge);
+        total += countInSlice(buf[start..left_edge]);
         // ensure prefixes are counted up to and including the end page
         var page = page_0;
         while (page <= page_1) : (page += 1) self.ensurePage(buf, page);
@@ -493,18 +499,15 @@ const NewLineIndex = struct {
         }
         // right partial page
         const right_edge = page_1 * PAGE_SIZE;
-        total += countInPage(buf, right_edge, end);
+        total += countInSlice(buf[right_edge..end]);
         return total;
     }
 };
 
-inline fn countInPage(buf: []const u8, start: usize, end: usize) usize {
+inline fn countInSlice(slice: []const u8) usize {
     // helper for directly counting newlines between a start and end value
     var count: usize = 0;
-    var idx = start;
-    while (idx < end) : (idx += 1) {
-        if (buf[idx] == '\n') count += 1;
-    }
+    for (slice) |c| { if (c == '\n') count += 1; }
     return count;
 }
 
