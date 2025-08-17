@@ -3,7 +3,7 @@ A GUI-based text editor written in zig. Mainly intended as a learning project an
 
 The name isn't that meaningful, just a play on zig and the idea of building functionality in solid discrete layers. The hope is that most components are well built and self-sufficient enough to be viable as standalone imports to other projects. 
 
-## Layer 1: Text Engine
+## Layer 1: Text Buffer
 
 This is more or less complete. In release mode, it will perform 100,000 mixed random operations of varying lengths on large files in ~15-20ms. It can materialize full documents in the 10MB range in 5ms. It's highly portable, with no dependencies other than zig itself. You could deploy this on a microcontroller, though I probably wouldn't recommend it since it relies heavily on the heap. 
 
@@ -20,7 +20,7 @@ There's a simpler version with just the piece table backed by an array included 
 
 ### API Reference
 
-`TextEngine` objects expose a public API with 5 methods:
+`TextBuffer` objects expose a public API with 5 methods:
 
 1. `init` - takes an allocator and initial text.
 2. `deinit` - destroys the table.

@@ -5,7 +5,7 @@ const utils = @import("utils");
 // The piece-table implementation for storing edits to a document efficiently in memory.
 // There are two distinct but highly coupled data structures implemented here.
 // Top-level is a piece table, but storing pieces in an array is SLOW! O(P)
-// Pieces are stored in a rope implemented as a b-tree. 
+// Pieces are stored in a rope implemented as a b-tree.
 // With P = # pieces:
 //   Locate index -> leaf:  O(log_{MIN_BRANCH} P)
 //   Point edit (insert/delete at one index):
@@ -92,10 +92,7 @@ const Node = struct {
     weight_lines: usize = 0,
     // tagged union makes mutual exclusivity between node types explicit.
     // also keeps node size as small as possible by not storing two headers
-    children: union(enum) {
-        internal: std.ArrayList(*Node),
-        leaf:     std.ArrayList(Piece)
-    },
+    children: union(enum) { internal: std.ArrayList(*Node), leaf: std.ArrayList(Piece) },
 };
 
 const Found = struct {
@@ -119,9 +116,7 @@ const InLeaf = struct {
 fn initLeaf(alloc: std.mem.Allocator) error{OutOfMemory}!*Node {
     const node = try alloc.create(Node);
     node.* = .{
-        .children = .{ 
-            .leaf = std.ArrayList(Piece).init(alloc)
-        },
+        .children = .{ .leaf = std.ArrayList(Piece).init(alloc) },
     };
     return node;
 }
@@ -129,9 +124,7 @@ fn initLeaf(alloc: std.mem.Allocator) error{OutOfMemory}!*Node {
 fn initInternal(alloc: std.mem.Allocator) error{OutOfMemory}!*Node {
     const node = try alloc.create(Node);
     node.* = .{
-        .children = .{
-            .internal = std.ArrayList(*Node).init(alloc)
-        },
+        .children = .{ .internal = std.ArrayList(*Node).init(alloc) },
     };
     return node;
 }
@@ -139,11 +132,13 @@ fn initInternal(alloc: std.mem.Allocator) error{OutOfMemory}!*Node {
 fn freeTree(alloc: std.mem.Allocator, node: *Node) void {
     // recursive function to free all children of a given node
     switch (node.children) {
-        .leaf     => |*pieces| { pieces.deinit(); },
-        .internal => |*children| { 
+        .leaf => |*pieces| {
+            pieces.deinit();
+        },
+        .internal => |*children| {
             for (children.items) |child| freeTree(alloc, child);
             children.deinit();
-        }
+        },
     }
     alloc.destroy(node);
 }
@@ -152,7 +147,7 @@ fn freeNode(alloc: std.mem.Allocator, node: *Node) void {
     // non-recursive function to free any single node
     debug.dassert(nodeCount(node) == 0, "cannot non-recursively free node with children");
     switch (node.children) {
-        .leaf     => |*pieces| pieces.deinit(),
+        .leaf => |*pieces| pieces.deinit(),
         .internal => |*chilren| chilren.deinit(),
     }
     alloc.destroy(node);
@@ -186,8 +181,8 @@ inline fn isLeaf(node: *const Node) bool {
 
 inline fn nodeCount(node: *const Node) usize {
     return switch (node.children) {
-        .leaf     => |*pieces| pieces.items.len,
-        .internal => |*children| children.items.len
+        .leaf => |*pieces| pieces.items.len,
+        .internal => |*children| children.items.len,
     };
 }
 
@@ -214,7 +209,7 @@ fn findAt(root: *Node, at: usize) Found {
     while (iter < MAX_ITER) : (iter += 1) {
         switch (node.children) {
             // if we've settled on a leaf, that's the one containing our index
-            .leaf => return .{ .leaf = node, .offset = idx},
+            .leaf => return .{ .leaf = node, .offset = idx },
             // otherwise, iterate through children
             .internal => |*children| {
                 const items = children.items;
@@ -228,10 +223,13 @@ fn findAt(root: *Node, at: usize) Found {
                     idx -= weight;
                 }
                 // if the node walked to the very end, a small manual adjustment is needed for consistency
-                if (i == len) { i -= 1; idx = items[i].weight_bytes; }
+                if (i == len) {
+                    i -= 1;
+                    idx = items[i].weight_bytes;
+                }
                 // items[i].weight_bytes <= idx < items[i+1].weight_bytes
                 node = items[i];
-            }
+            },
         }
     }
     unreachable;
@@ -266,10 +264,7 @@ fn getSiblings(child: *const Node) Siblings {
     if (child.parent) |parent| {
         const siblings = childListConst(parent).items;
         const idx = indexOfChild(siblings, child);
-        return .{
-            .l = if (idx > 0) siblings[idx-1] else null,
-            .r = if (idx + 1 < siblings.len) siblings[idx+1] else null
-        };
+        return .{ .l = if (idx > 0) siblings[idx - 1] else null, .r = if (idx + 1 < siblings.len) siblings[idx + 1] else null };
     }
     return .{ .l = null, .r = null };
 }
@@ -319,8 +314,11 @@ fn mergeAround(leaf: *Node, idx: usize) void {
     const pieces = leafPieces(leaf);
     debug.dassert(idx < pieces.items.len, "merge index must be inside piece table");
     var i = idx;
-    if (i > 0 and canMerge(leaf, i-1, i)) { merge(leaf, i-1, i); i -= 1; }
-    if (i + 1 < pieces.items.len and canMerge(leaf, i, i+1)) merge(leaf, i, i+1);
+    if (i > 0 and canMerge(leaf, i - 1, i)) {
+        merge(leaf, i - 1, i);
+        i -= 1;
+    }
+    if (i + 1 < pieces.items.len and canMerge(leaf, i, i + 1)) merge(leaf, i, i + 1);
 }
 
 // helpers for editing nodes
@@ -350,9 +348,19 @@ fn spliceIntoLeaf(pieces: *std.ArrayList(Piece), loc: InLeaf, add_off: usize, ad
         // create a buffer that holds at most 3 new pieces and populate
         var buf: [3]Piece = undefined;
         var n: usize = 0;
-        if (loc.offset != 0) { buf[n] = old; buf[n].setLen(loc.offset); n += 1; }
-        buf[n] = new_piece; n += 1;
-        if (len_suffix != 0) { buf[n] = old; buf[n].off += loc.offset; buf[n].setLen(len_suffix); n += 1; }
+        if (loc.offset != 0) {
+            buf[n] = old;
+            buf[n].setLen(loc.offset);
+            n += 1;
+        }
+        buf[n] = new_piece;
+        n += 1;
+        if (len_suffix != 0) {
+            buf[n] = old;
+            buf[n].off += loc.offset;
+            buf[n].setLen(len_suffix);
+            n += 1;
+        }
         // carefully splice that buffer into the piece array
         pieces.items[loc.piece_idx] = buf[0];
         if (n >= 2) try pieces.insertSlice(loc.piece_idx + 1, buf[1..n]);
@@ -370,7 +378,9 @@ fn bubbleByteDelta(node: *Node, delta: usize, is_neg: bool) void {
         if (is_neg) {
             debug.dassert(n.weight_bytes >= delta, "cannot give a node a negative byte weight");
             n.weight_bytes -= delta;
-        } else { n.weight_bytes += delta; }
+        } else {
+            n.weight_bytes += delta;
+        }
         cur = n.parent;
     }
 }
@@ -413,7 +423,7 @@ fn planBorrow(node: *Node, siblings: Siblings) BorrowPlan {
 const PAGE_SIZE = 4 * 1024;
 
 const NewLineIndex = struct {
-    // Real-world navigation in documents is generally line-centric. 
+    // Real-world navigation in documents is generally line-centric.
     // Obviously then, we need a way of representing where the line breaks are to support O(log n) lookup.
     // Scanning the entire document on load is one option, but that's slow and we want speed.
     // Another option is lazily scanning only the portions of the document that have been touched
@@ -421,10 +431,7 @@ const NewLineIndex = struct {
     prefix: std.ArrayList(usize),
 
     fn init(alloc: std.mem.Allocator) NewLineIndex {
-        return .{ 
-            .done = std.ArrayList(bool).init(alloc), 
-            .prefix = std.ArrayList(usize).init(alloc) 
-        };
+        return .{ .done = std.ArrayList(bool).init(alloc), .prefix = std.ArrayList(usize).init(alloc) };
     }
 
     fn deinit(self: *NewLineIndex) void {
@@ -465,7 +472,9 @@ const NewLineIndex = struct {
         const page_0 = start / PAGE_SIZE;
         const page_1 = (end - 1) / PAGE_SIZE;
         // range inside a single page, count directly
-        if (page_0 == page_1) { return countInPage(buf, start, end); }
+        if (page_0 == page_1) {
+            return countInPage(buf, start, end);
+        }
         // generic case: we count left and right edges and middle is handled by precomputed prefixes
         var total: usize = 0;
         const left_edge = (page_0 + 1) * PAGE_SIZE;
@@ -490,13 +499,15 @@ inline fn countInPage(buf: []const u8, start: usize, end: usize) usize {
     // helper for directly counting newlines between a start and end value
     var count: usize = 0;
     var idx = start;
-    while (idx < end) : (idx += 1) { if (buf[idx] == '\n') count += 1; }
+    while (idx < end) : (idx += 1) {
+        if (buf[idx] == '\n') count += 1;
+    }
     return count;
 }
 
 // -------------------- PIECE TABLE IMPLEMENTATION --------------------
 
-pub const TextEngine = struct {
+pub const TextBuffer = struct {
     // piece table collection object.
     // holds a pointer to the original document as well as a working append-only buffer.
     // holds a collection of ordered "pieces" which describe how to build a final document using the two buffers.
@@ -508,8 +519,8 @@ pub const TextEngine = struct {
     doc_len: usize,
     alloc: std.mem.Allocator,
 
-    pub fn init(alloc: std.mem.Allocator, original: []const u8) error{OutOfMemory, FileTooBig}!TextEngine {
-        // enforce the assertion about maximum file sizes even in release modes. 
+    pub fn init(alloc: std.mem.Allocator, original: []const u8) error{ OutOfMemory, FileTooBig }!TextBuffer {
+        // enforce the assertion about maximum file sizes even in release modes.
         const limit = @as(usize, 1) << (@bitSizeOf(usize) - 1);
         if (original.len >= limit) return error.FileTooBig;
         // initialize the root of the tree
@@ -518,7 +529,7 @@ pub const TextEngine = struct {
             try leafPieces(leaf).append(Piece.init(.Original, original.len, 0));
             leaf.weight_bytes = original.len;
         }
-        var engine = TextEngine{
+        var engine = TextBuffer{
             .original = original,
             .add = std.ArrayList(u8).init(alloc),
             .o_idx = NewLineIndex.init(alloc),
@@ -530,15 +541,15 @@ pub const TextEngine = struct {
         if (original.len > 0) leaf.weight_lines = try engine.o_idx.countRange(original, 0, original.len);
         return engine;
     }
-    
-    pub fn deinit(self: *TextEngine) void {
+
+    pub fn deinit(self: *TextBuffer) void {
         self.add.deinit();
         self.o_idx.deinit();
         self.a_idx.deinit();
         freeTree(self.alloc, self.root);
     }
 
-    pub fn insert(self: *TextEngine, at: usize, text: []const u8) error{OutOfMemory}!void {
+    pub fn insert(self: *TextBuffer, at: usize, text: []const u8) error{OutOfMemory}!void {
         debug.dassert(at <= self.doc_len, "cannot insert outside of the document.");
         debug.dassert(text.len > 0, "cannot insert empty text");
         const add_offset = self.add.items.len;
@@ -565,7 +576,7 @@ pub const TextEngine = struct {
         self.doc_len += text.len;
     }
 
-    pub fn delete(self: *TextEngine, at: usize, len: usize) error{OutOfMemory}!void {
+    pub fn delete(self: *TextBuffer, at: usize, len: usize) error{OutOfMemory}!void {
         debug.dassert(at + len <= self.doc_len, "cannot delete outside of document");
         debug.dassert(len > 0, "cannot delete empty span");
         var remaining = len;
@@ -585,40 +596,39 @@ pub const TextEngine = struct {
                 debug.dassert(next_leaf != null, "reached rightmost leaf with non-empty deletion queue");
                 leaf = next_leaf.?;
             }
-            
         }
         try self.repairAfterDelete(left, leaf);
         self.doc_len -= len;
     }
 
-    pub fn materialize(self: *TextEngine, w: anytype) @TypeOf(w).Error!void {
+    pub fn materialize(self: *TextBuffer, w: anytype) @TypeOf(w).Error!void {
         try self.writeSubtree(w, self.root);
     }
 
     // -------------------- WRITE HELPERS --------------------
 
-    fn writeSubtree(self: *TextEngine, w: anytype, node: *const Node) @TypeOf(w).Error!void {
+    fn writeSubtree(self: *TextBuffer, w: anytype, node: *const Node) @TypeOf(w).Error!void {
         switch (node.children) {
             .leaf => try self.writeLeaf(w, node),
-            .internal => |*children| try self.writeChildren(w, children.items, 0)
+            .internal => |*children| try self.writeChildren(w, children.items, 0),
         }
     }
 
-    fn writeLeaf(self: *TextEngine, w: anytype, leaf: *const Node) @TypeOf(w).Error!void {
+    fn writeLeaf(self: *TextBuffer, w: anytype, leaf: *const Node) @TypeOf(w).Error!void {
         // helper method to write all of the pieces from a given leaf
         const pieces = leafPiecesConst(leaf);
         for (pieces.items) |piece| {
-            const src = switch(piece.buf()) {
+            const src = switch (piece.buf()) {
                 .Original => self.original,
-                .Add      => self.add.items,
+                .Add => self.add.items,
             };
             debug.dassert(piece.off <= src.len, "piece offset must be inside it's source buffer");
             debug.dassert(piece.len() <= src.len - piece.off, "full piece slice must be inside source buffer");
-            try w.writeAll(src[piece.off..piece.off + piece.len()]);
+            try w.writeAll(src[piece.off .. piece.off + piece.len()]);
         }
     }
 
-    fn writeChildren(self: *TextEngine, w: anytype, children: []const *Node, idx: usize) @TypeOf(w).Error!void {
+    fn writeChildren(self: *TextBuffer, w: anytype, children: []const *Node, idx: usize) @TypeOf(w).Error!void {
         if (idx >= children.len) return;
         // traverse deeper on leftmost node
         try self.writeSubtree(w, children[idx]);
@@ -628,7 +638,7 @@ pub const TextEngine = struct {
 
     // -------------------- INSERT HELPERS --------------------
 
-    fn bubbleOverflowUp(self: *TextEngine, start: *Node) error{OutOfMemory}!void {
+    fn bubbleOverflowUp(self: *TextBuffer, start: *Node) error{OutOfMemory}!void {
         // It's possible that a node split overflows it's parent, which splits and overflows IT'S parent...
         // Thus the logic needs to "bubble up" from the bottom of the tree until splits stop happening
         var cur: ?*Node = start;
@@ -639,7 +649,7 @@ pub const TextEngine = struct {
         }
     }
 
-    fn splitNodeIfOverflow(self: *TextEngine, node: *Node) error{OutOfMemory}!?*Node {
+    fn splitNodeIfOverflow(self: *TextBuffer, node: *Node) error{OutOfMemory}!?*Node {
         // this function will look at ANY node and perform the following logic:
         //  1. if this node has less than the maximum number of children, do nothing
         //  2. if it DOES have less than the max, split it in half into a new node
@@ -687,11 +697,11 @@ pub const TextEngine = struct {
                 right.weight_bytes = moved.bytes;
                 right.weight_lines = moved.lines;
                 return self.spliceNodeInTree(node, right);
-            }
+            },
         }
     }
 
-    fn spliceNodeInTree(self: *TextEngine, old: *Node, new: *Node) error{OutOfMemory}!?*Node {
+    fn spliceNodeInTree(self: *TextBuffer, old: *Node, new: *Node) error{OutOfMemory}!?*Node {
         // general case, add the new node one to the right of the old
         if (old.parent) |parent| {
             const siblings = childList(parent);
@@ -699,7 +709,7 @@ pub const TextEngine = struct {
             try siblings.insert(idx + 1, new);
             new.parent = parent;
             return parent;
-        // edge case, old node was the root, create a new root and create both as siblings
+            // edge case, old node was the root, create a new root and create both as siblings
         } else {
             const root = try initInternal(self.alloc);
             try childList(root).append(old);
@@ -717,7 +727,7 @@ pub const TextEngine = struct {
 
     const DeleteResult = struct { bytes: usize, lines: usize };
 
-    fn deleteFromLeaf(self: *TextEngine, leaf: *Node, start: InLeaf, max_remove: usize) error{OutOfMemory}!DeleteResult {
+    fn deleteFromLeaf(self: *TextBuffer, leaf: *Node, start: InLeaf, max_remove: usize) error{OutOfMemory}!DeleteResult {
         // attempt to delete at most max_remove bytes from the current leaf.
         // return the total number that could be deleted, deletion may go into another node.
         var pieces = leafPieces(leaf);
@@ -725,7 +735,7 @@ pub const TextEngine = struct {
         var removed_lines: usize = 0;
         var piece_idx = start.piece_idx;
         const prefix_len = start.offset;
-        if (piece_idx >= pieces.items.len) return .{ .bytes = 0, .lines = 0};
+        if (piece_idx >= pieces.items.len) return .{ .bytes = 0, .lines = 0 };
         // handle the current (first) piece
         var piece = &pieces.items[piece_idx];
         var take = @min(max_remove, piece.len() - prefix_len);
@@ -741,10 +751,16 @@ pub const TextEngine = struct {
                 suffix.setLen(suffix_len);
                 try pieces.insert(piece_idx + 1, suffix);
                 piece_idx += 1;
-            // there is no suffix, trim the front
-            } else if (prefix_len > 0) { piece.setLen(prefix_len); piece_idx += 1; }
+                // there is no suffix, trim the front
+            } else if (prefix_len > 0) {
+                piece.setLen(prefix_len);
+                piece_idx += 1;
+            }
             // there is no prefix, trim the tail
-            else { piece.off += take; piece.setLen(suffix_len); }
+            else {
+                piece.off += take;
+                piece.setLen(suffix_len);
+            }
             removed_bytes += take;
         }
         // if applicable, remove entire middle pieces, coalesce into one big delete at the end
@@ -774,7 +790,7 @@ pub const TextEngine = struct {
         return removed;
     }
 
-    fn transferRangeBetweenSiblings(self: *TextEngine, src: *Node, dst: *Node, start: usize, count: usize, side: enum{Front, Back}) error{OutOfMemory}!void {
+    fn transferRangeBetweenSiblings(self: *TextBuffer, src: *Node, dst: *Node, start: usize, count: usize, side: enum { Front, Back }) error{OutOfMemory}!void {
         debug.dassert(count > 0, "cannot transfer 0 nodes between siblings");
         debug.dassert(std.meta.activeTag(src.children) == std.meta.activeTag(dst.children), "source and destination must be the same type of node");
         debug.dassert(start == 0 or start + count == nodeCount(src), "insertions must be contiguous with start or end of source");
@@ -785,17 +801,17 @@ pub const TextEngine = struct {
                 debug.dassert(src_pieces.items.len >= count, "source must contain enough items to transfer");
                 debug.dassert(dst_pieces.items.len > 0, "destination must not start empty");
                 // calculate exactly how many bytes and lines are moving
-                const to_move = src_pieces.items[start..start + count];
-                const moved = try self.countMovedPieces(to_move);           
+                const to_move = src_pieces.items[start .. start + count];
+                const moved = try self.countMovedPieces(to_move);
                 switch (side) {
                     .Front => try dst_pieces.insertSlice(0, to_move),
-                    .Back  => try dst_pieces.appendSlice(to_move),
+                    .Back => try dst_pieces.appendSlice(to_move),
                 }
                 _ = utils.orderedRemoveRange(Piece, src_pieces, start, count);
                 // check for new merge opportunities
                 const center: usize = switch (side) {
                     .Front => count,
-                    .Back  => dst_pieces.items.len - count
+                    .Back => dst_pieces.items.len - count,
                 };
                 mergeAround(dst, center);
                 bubbleByteDelta(src, moved.bytes, true);
@@ -809,32 +825,32 @@ pub const TextEngine = struct {
                 debug.dassert(src_children.items.len >= count, "source must contain enough items to transfer");
                 debug.dassert(dst_children.items.len > 0, "destination must not start empty");
                 // calculate exactly how many bytes and lines are moving
-                const to_move = src_children.items[start..start + count];
+                const to_move = src_children.items[start .. start + count];
                 const moved = countMovedNodes(to_move);
                 switch (side) {
                     .Front => try dst_children.insertSlice(0, to_move),
-                    .Back  => try dst_children.appendSlice(to_move),
+                    .Back => try dst_children.appendSlice(to_move),
                 }
                 _ = utils.orderedRemoveRange(*Node, src_children, start, count);
                 // fix parent pointers for moved children
                 const adopted = switch (side) {
                     .Front => dst_children.items[0..count],
-                    .Back  => dst_children.items[dst_children.items.len - count..]
+                    .Back => dst_children.items[dst_children.items.len - count ..],
                 };
                 for (adopted) |child| child.parent = dst;
                 bubbleByteDelta(src, moved.bytes, true);
                 bubbleByteDelta(dst, moved.bytes, false);
                 bubbleLineDelta(src, moved.lines);
                 bubbleLineDelta(dst, moved.lines);
-            }
+            },
         }
     }
 
-    fn tryBorrow(self: *TextEngine, node: *Node, siblings: Siblings) error{OutOfMemory}!usize {
+    fn tryBorrow(self: *TextBuffer, node: *Node, siblings: Siblings) error{OutOfMemory}!usize {
         // uses a borrow plan to take exactly as many nodes from neighbors as can be spared
         const plan = planBorrow(node, siblings);
         if (siblings.l) |left| {
-            if (plan.take_left > 0) { 
+            if (plan.take_left > 0) {
                 try self.transferRangeBetweenSiblings(left, node, nodeCount(left) - plan.take_left, plan.take_left, .Front);
             }
         }
@@ -846,13 +862,13 @@ pub const TextEngine = struct {
         return plan.take_left + plan.take_right;
     }
 
-    fn repairAfterDelete(self: *TextEngine, left: *Node, right: *Node) error{OutOfMemory}!void {
+    fn repairAfterDelete(self: *TextBuffer, left: *Node, right: *Node) error{OutOfMemory}!void {
         try self.repairUpward(left);
         if (left != right) try self.repairUpward(right);
         try self.tryCollapseRoot();
     }
 
-    fn repairUpward(self: *TextEngine, start: *Node) error{OutOfMemory}!void {
+    fn repairUpward(self: *TextBuffer, start: *Node) error{OutOfMemory}!void {
         var cur: ?*Node = start;
         while (cur) |node| {
             if (node.parent == null) return;
@@ -869,20 +885,29 @@ pub const TextEngine = struct {
                 const siblings = getSiblings(node);
                 // attempt to merge with neighbors
                 if (siblings.l) |left| {
-                    if (try self.mergeWithSibling(node, left)) |parent| { cur = parent; continue; }
+                    if (try self.mergeWithSibling(node, left)) |parent| {
+                        cur = parent;
+                        continue;
+                    }
                 }
                 if (siblings.r) |right| {
-                    if (try self.mergeWithSibling(right, node)) |parent| { cur = parent; continue; }
+                    if (try self.mergeWithSibling(right, node)) |parent| {
+                        cur = parent;
+                        continue;
+                    }
                 }
                 // failing that, try and borrow children
                 const borrowed = try self.tryBorrow(node, siblings);
-                if (borrowed >= demand) { cur = node.parent; continue; }
+                if (borrowed >= demand) {
+                    cur = node.parent;
+                    continue;
+                }
             }
             cur = node.parent;
         }
     }
 
-    fn tryCollapseRoot(self: *TextEngine) error{OutOfMemory}!void {
+    fn tryCollapseRoot(self: *TextBuffer) error{OutOfMemory}!void {
         // checks for cases where the root node is no longer needed and collapses if necessary
         switch (self.root.children) {
             .leaf => {},
@@ -899,11 +924,11 @@ pub const TextEngine = struct {
                     freeNode(self.alloc, self.root);
                     self.root = child;
                 }
-            }
+            },
         }
     }
 
-    fn infanticide(self: *TextEngine, parent: *Node, child: *Node) void {
+    fn infanticide(self: *TextBuffer, parent: *Node, child: *Node) void {
         // metal
         const siblings = childList(parent);
         const idx = indexOfChild(siblings.items, child);
@@ -911,7 +936,7 @@ pub const TextEngine = struct {
         freeTree(self.alloc, child);
     }
 
-    fn mergeWithSibling(self: *TextEngine, src: *Node, dst: *Node) error{OutOfMemory}!?*Node {
+    fn mergeWithSibling(self: *TextBuffer, src: *Node, dst: *Node) error{OutOfMemory}!?*Node {
         if (nodeCount(src) + nodeCount(dst) > nodeMax(dst)) return null;
         try self.transferRangeBetweenSiblings(src, dst, 0, nodeCount(src), .Back);
         const parent = src.parent.?;
@@ -921,39 +946,39 @@ pub const TextEngine = struct {
 
     // -------------------- LINE COUNT HELPERS --------------------
 
-    fn countLinesInPiece(self: *TextEngine, p: *Piece) error{OutOfMemory}!usize {
+    fn countLinesInPiece(self: *TextBuffer, p: *Piece) error{OutOfMemory}!usize {
         switch (p.buf()) {
             .Original => return self.o_idx.countRange(self.original, p.off, p.len()),
-            .Add      => return self.a_idx.countRange(self.add.items, p.off, p.len()),
+            .Add => return self.a_idx.countRange(self.add.items, p.off, p.len()),
         }
     }
 
-    fn countLinesInPieceRange(self: *TextEngine, p: *Piece, offset: usize, len: usize) !usize {
+    fn countLinesInPieceRange(self: *TextBuffer, p: *Piece, offset: usize, len: usize) !usize {
         switch (p.buf()) {
             .Original => return self.o_idx.countRange(self.original, p.off + offset, len),
-            .Add      => return self.a_idx.countRange(self.add.items, p.off + offset, len),
+            .Add => return self.a_idx.countRange(self.add.items, p.off + offset, len),
         }
     }
 
     const MoveResult = struct { bytes: usize, lines: usize };
 
-    fn countMovedPieces(self: *TextEngine, to_move: []Piece) error{OutOfMemory}!MoveResult {
+    fn countMovedPieces(self: *TextBuffer, to_move: []Piece) error{OutOfMemory}!MoveResult {
         var moved_bytes: usize = 0;
         var moved_lines: usize = 0;
-        for (to_move) |*piece| { 
+        for (to_move) |*piece| {
             moved_bytes += piece.len();
             moved_lines += try self.countLinesInPiece(piece);
         }
-        return .{ .bytes = moved_bytes, .lines = moved_lines };   
+        return .{ .bytes = moved_bytes, .lines = moved_lines };
     }
 
     fn countMovedNodes(to_move: []*Node) MoveResult {
         var moved_bytes: usize = 0;
         var moved_lines: usize = 0;
-        for (to_move) |node| { 
-            moved_bytes += node.weight_bytes; 
+        for (to_move) |node| {
+            moved_bytes += node.weight_bytes;
             moved_lines += node.weight_lines;
         }
-        return .{ .bytes = moved_bytes, .lines = moved_lines }; 
+        return .{ .bytes = moved_bytes, .lines = moved_lines };
     }
 };

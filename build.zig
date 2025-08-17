@@ -31,8 +31,8 @@ pub fn build(b: *std.Build) void {
     });
     utils_mod.addImport("debug", debug_mod);
 
-    const ref_engine_mod = b.addModule("ref_engine", .{
-        .root_source_file = b.path("src/tools/ref_text_engine.zig"),
+    const ref_buffer_mod = b.addModule("ref_buffer", .{
+        .root_source_file = b.path("src/tools/ref_text_buffer.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
@@ -41,8 +41,8 @@ pub fn build(b: *std.Build) void {
         },
     });
 
-    const engine_mod = b.addModule("engine", .{
-        .root_source_file = b.path("src/core/text_engine.zig"),
+    const buffer_mod = b.addModule("buffer", .{
+        .root_source_file = b.path("src/core/text_buffer.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
@@ -73,7 +73,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "debug", .module = debug_mod },
             .{ .name = "utils", .module = utils_mod },
-            .{ .name = "engine", .module = engine_mod },
+            .{ .name = "buffer", .module = buffer_mod },
         },
     });
 
@@ -134,8 +134,8 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "debug", .module = debug_mod },
                 .{ .name = "utils", .module = utils_mod },
-                .{ .name = "ref_engine", .module = ref_engine_mod },
-                .{ .name = "engine", .module = engine_mod },
+                .{ .name = "ref_buffer", .module = ref_buffer_mod },
+                .{ .name = "buffer", .module = buffer_mod },
             },
         }),
     });

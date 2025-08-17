@@ -1,9 +1,8 @@
 const std = @import("std");
 const debug = @import("debug");
 const utils = @import("utils");
-const RefEngine = @import("ref_engine").TextEngine;
-const NewEngine = @import("engine").TextEngine;
-
+const RefEngine = @import("ref_buffer").TextBuffer;
+const NewEngine = @import("buffer").TextBuffer;
 
 // -------------------- TEST FIXTURE IMPLEMENTATION --------------------
 
@@ -31,7 +30,7 @@ const TextOp = struct {
 
     pub fn format(self: TextOp, writer: anytype) !void {
         switch (self.op) {
-            .I => try writer.print("I {d} {d} : {s}", .{ self.loc.at, self.loc.len, self.text}),
+            .I => try writer.print("I {d} {d} : {s}", .{ self.loc.at, self.loc.len, self.text }),
             .D => try writer.print("D {d} {d}", .{ self.loc.at, self.loc.len }),
         }
     }
@@ -70,19 +69,19 @@ fn replayWithEngine(comptime Engine: type, alloc: std.mem.Allocator, init_text: 
     var editor = try Engine.init(alloc, init_text);
     defer editor.deinit();
     const init_ns = timer.read();
-    try utils.printf("Completed in {d} ms\n", .{ init_ns / 1_000_000 });
+    try utils.printf("Completed in {d} ms\n", .{init_ns / 1_000_000});
 
     timer.reset();
     for (ops, 0..) |op, i| {
         if (i % 1000 == 0) try utils.printf("Performing Ops: {d: >7} / {d: >7}\r", .{ i, ops.len });
-        switch(op.op) {
+        switch (op.op) {
             .I => try editor.insert(op.loc.at, op.text),
             .D => try editor.delete(op.loc.at, op.loc.len),
         }
     }
     const run_ns = timer.read();
     try utils.printf("Performing Ops: {d: >7} / {d: >7} ... ", .{ ops.len, ops.len });
-    try utils.printf("Completed in {d} ms\n", .{ run_ns / 1_000_000 });
+    try utils.printf("Completed in {d} ms\n", .{run_ns / 1_000_000});
 
     // deinit is handled when returning an owned slice
     var out_buf = std.ArrayList(u8).init(alloc);
@@ -99,12 +98,7 @@ fn replayWithEngine(comptime Engine: type, alloc: std.mem.Allocator, init_text: 
 
 // -------------------- TEST FIXTURE GENERATOR IMPLEMENTATION --------------------
 
-const GenConfig = struct {
-    seed: u64,
-    n_ops: usize,
-    p_insert: u8,
-    p_long: u8
-};
+const GenConfig = struct { seed: u64, n_ops: usize, p_insert: u8, p_long: u8 };
 
 const MIN_EDIT_LEN = 1;
 const MAX_EDIT_LEN = 8;
@@ -115,8 +109,11 @@ fn getLoc(rng: *utils.RNG, is_long: bool, doc_len: usize) Location {
     // suitable as-is for appends, deletes require OOB verification
     const at: usize = rng.randInt(usize, 0, doc_len + 1);
     var len: usize = undefined;
-    if (!is_long) { len = rng.randInt(usize, MIN_EDIT_LEN, MAX_EDIT_LEN); } 
-    else { len = rng.randInt(usize, MIN_EDIT_LEN * LONG_MULT, MAX_EDIT_LEN * LONG_MULT); }
+    if (!is_long) {
+        len = rng.randInt(usize, MIN_EDIT_LEN, MAX_EDIT_LEN);
+    } else {
+        len = rng.randInt(usize, MIN_EDIT_LEN * LONG_MULT, MAX_EDIT_LEN * LONG_MULT);
+    }
     return .{ .at = at, .len = len };
 }
 
@@ -178,7 +175,7 @@ fn generateOps(a: std.mem.Allocator, rng: *utils.RNG, cfg: GenConfig, init_doc_l
     }
     const gen_ns = timer.read();
     try utils.printf("Generating Ops: {d: >7} / {d: >7} ... ", .{ cfg.n_ops, cfg.n_ops });
-    try utils.printf("Completed in {d} ms\n", .{ gen_ns / 1_000_000 });
+    try utils.printf("Completed in {d} ms\n", .{gen_ns / 1_000_000});
     return out;
 }
 
@@ -187,7 +184,7 @@ fn generateFixture(alloc: std.mem.Allocator, cfg: GenConfig, init_text: []const 
     var fixture = TestFixture.init(alloc);
     errdefer fixture.deinit();
     const a = fixture.allocator();
-    
+
     // move init text and operations into fixture, carefully manage memory
     fixture.init_text = try a.dupe(u8, init_text);
     var rng = utils.RNG.init(cfg.seed);
@@ -213,19 +210,19 @@ fn writeFixtureToPath(alloc: std.mem.Allocator, path: []const u8, fixture: *cons
 
     var timer = try std.time.Timer.start();
     // write number of ops at head of file
-    try writeFileAlloc(file, alloc, "{d}\n", .{ fixture.ops.len });
+    try writeFileAlloc(file, alloc, "{d}\n", .{fixture.ops.len});
     // write a hex-converted version of the init file on the next line
     const init_hex = try utils.bytesToHexAlloc(alloc, fixture.init_text);
     defer alloc.free(init_hex);
-    try writeFileAlloc(file, alloc, "{s}\n", .{ init_hex });
+    try writeFileAlloc(file, alloc, "{s}\n", .{init_hex});
     // write a series of lines, one for each file op
-    for (fixture.ops) |op| try writeFileAlloc(file, alloc, "{f}\n", .{ op });
+    for (fixture.ops) |op| try writeFileAlloc(file, alloc, "{f}\n", .{op});
     // finally, convert the result to hex and write that on that last line
     const final_hex = try utils.bytesToHexAlloc(alloc, fixture.final_text);
     defer alloc.free(final_hex);
-    try writeFileAlloc(file, alloc, "{s}\n", .{ final_hex });
+    try writeFileAlloc(file, alloc, "{s}\n", .{final_hex});
     const write_ns = timer.read();
-    try utils.printf("Wrote fixture to output file in {d} ms\n", .{ write_ns / 1_000_000 });
+    try utils.printf("Wrote fixture to output file in {d} ms\n", .{write_ns / 1_000_000});
 }
 
 inline fn trimCR(s: []const u8) []const u8 {
@@ -244,9 +241,9 @@ fn parseInsertLine(arena: std.mem.Allocator, line_in: []const u8) !TextOp {
     if (!std.mem.startsWith(u8, left, "I ")) return error.BadInsertPrefix;
 
     var toks = std.mem.tokenizeAny(u8, left[2..], " \t");
-    const at_s  = toks.next() orelse return error.BadInsertAt;
+    const at_s = toks.next() orelse return error.BadInsertAt;
     const len_s = toks.next() orelse return error.BadInsertLen;
-    const at  = try std.fmt.parseInt(usize, at_s, 10);
+    const at = try std.fmt.parseInt(usize, at_s, 10);
     const len = try std.fmt.parseInt(usize, len_s, 10);
 
     // Right: payload; allow optional single space after ':'
@@ -268,9 +265,9 @@ fn parseDeleteLine(line_in: []const u8) !TextOp {
     if (!std.mem.startsWith(u8, line, "D ")) return error.BadDeletePrefix;
 
     var toks = std.mem.tokenizeAny(u8, line[2..], " \t");
-    const at_s  = toks.next() orelse return error.BadDeleteAt;
+    const at_s = toks.next() orelse return error.BadDeleteAt;
     const len_s = toks.next() orelse return error.BadDeleteLen;
-    const at  = try std.fmt.parseInt(usize, at_s, 10);
+    const at = try std.fmt.parseInt(usize, at_s, 10);
     const len = try std.fmt.parseInt(usize, len_s, 10);
 
     return TextOp.initDelete(.{ .at = at, .len = len });
@@ -327,21 +324,20 @@ pub fn parseFixtureFromPath(parent_alloc: std.mem.Allocator, path: []const u8) !
     return fixture;
 }
 
-
 // -------------------- CLI IMPLEMENTATION --------------------
 
 fn printUsage(cmd: [:0]u8) !void {
     try utils.printf("There are three accepted usage cases:\n", .{});
-    try utils.printf("\tgenerate fixture:\t{s} generate <path_in> <insert %> <long %> <# ops> <path_out>\n", .{ cmd });
-    try utils.printf("\ttest with fixture:\t{s} test <path_in>\n", .{ cmd });
-    try utils.printf("\ttest all fixtures:\t{s} test all\n", .{ cmd });
+    try utils.printf("\tgenerate fixture:\t{s} generate <path_in> <insert %> <long %> <# ops> <path_out>\n", .{cmd});
+    try utils.printf("\ttest with fixture:\t{s} test <path_in>\n", .{cmd});
+    try utils.printf("\ttest all fixtures:\t{s} test all\n", .{cmd});
 }
 
 pub fn fixtureGeneration(a: std.mem.Allocator, args: [][:0]u8) !void {
     const path_in = args[2];
     const path_out = args[6];
-    const cfg = GenConfig{ 
-        .seed = 0xdead_beef_dead_beef, 
+    const cfg = GenConfig{
+        .seed = 0xdead_beef_dead_beef,
         .p_insert = try std.fmt.parseInt(u8, args[3], 10),
         .p_long = try std.fmt.parseInt(u8, args[4], 10),
         .n_ops = try std.fmt.parseInt(usize, args[5], 10),
@@ -358,19 +354,22 @@ pub fn fixtureGeneration(a: std.mem.Allocator, args: [][:0]u8) !void {
 }
 
 pub fn testFixture(a: std.mem.Allocator, path_in: []const u8) !bool {
-    try utils.printf("Parsing {s} ... ", .{ path_in });
+    try utils.printf("Parsing {s} ... ", .{path_in});
     var timer = try std.time.Timer.start();
     var fixture = try parseFixtureFromPath(a, path_in);
     defer fixture.deinit();
     const parse_ns = timer.read();
-    try utils.printf("Completed in {d} ms\n", .{ parse_ns / 1_000_000 });
+    try utils.printf("Completed in {d} ms\n", .{parse_ns / 1_000_000});
 
     const final_text = try replayWithEngine(NewEngine, a, fixture.init_text, fixture.ops);
     defer a.free(final_text);
     const match = std.mem.eql(u8, fixture.final_text, final_text);
 
-    if (match) { try utils.printf("Match!\n", .{}); }
-    else { try utils.printf("TEST FAILED!\n", .{}); }
+    if (match) {
+        try utils.printf("Match!\n", .{});
+    } else {
+        try utils.printf("TEST FAILED!\n", .{});
+    }
     return match;
 }
 
@@ -401,8 +400,9 @@ pub fn main() !void {
         return;
     }
 
-    if (args.len == 7) { try fixtureGeneration(alloc, args); }
-    else if (std.mem.eql(u8, "all", args[2])) {
+    if (args.len == 7) {
+        try fixtureGeneration(alloc, args);
+    } else if (std.mem.eql(u8, "all", args[2])) {
         var cwd = try std.fs.cwd().openDir("fixtures", .{ .iterate = true });
         defer cwd.close();
         var it = cwd.iterate();
@@ -410,12 +410,14 @@ pub fn main() !void {
             switch (entry.kind) {
                 .file => {
                     if (!std.mem.endsWith(u8, entry.name, "test.txt")) continue;
-                    const rel_path = try std.fmt.allocPrint(alloc, "./fixtures/{s}", .{ entry.name });
+                    const rel_path = try std.fmt.allocPrint(alloc, "./fixtures/{s}", .{entry.name});
                     defer alloc.free(rel_path);
                     _ = try testFixture(alloc, rel_path);
                 },
                 else => {},
             }
         }
-    } else { _ = try testFixture(alloc, args[2]); }
+    } else {
+        _ = try testFixture(alloc, args[2]);
+    }
 }
