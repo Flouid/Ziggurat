@@ -93,22 +93,6 @@ const Node = struct {
     children: union(enum) { internal: std.ArrayList(*Node), leaf: std.ArrayList(Piece) },
 };
 
-const Found = struct {
-    // for global navigation of the document.
-    // when looking for the in-memory object representing a specific index into the document,
-    // this is what is returned: A leaf node and the offset into its memory.
-    leaf: *Node,
-    offset: usize,
-};
-
-const InLeaf = struct {
-    // for local navigation inside of a leaf.
-    // when looking for the specific piece that contains an index, this is what's returned:
-    // An index into that leaf node's pieces array, and the offset within that piece.
-    piece_idx: usize,
-    offset: usize,
-};
-
 // memory management: allocation and deallocation
 
 fn initLeaf(alloc: std.mem.Allocator) error{OutOfMemory}!*Node {
@@ -200,6 +184,12 @@ inline fn spareNodes(node: *Node) usize {
 
 // navigation within a document and within a leaf
 
+const Found = struct {
+    // for global navigation of the document from working index
+    leaf: *Node,    // leaf node containing the target
+    offset: usize,  // offset into that node's memory
+};
+
 fn findAt(root: *Node, at: usize) Found {
     var node = root;
     var idx = at;
@@ -220,11 +210,8 @@ fn findAt(root: *Node, at: usize) Found {
                     if (idx < weight) break;
                     idx -= weight;
                 }
-                // if the node walked to the very end, a small manual adjustment is needed for consistency
-                if (i == len) {
-                    i -= 1;
-                    idx = items[i].weight_bytes;
-                }
+                // if the node walked to the very end, something is wrong
+                debug.dassert(i < len, "failed to find index");
                 // items[i].weight_bytes <= idx < items[i+1].weight_bytes
                 node = items[i];
             },
@@ -232,6 +219,12 @@ fn findAt(root: *Node, at: usize) Found {
     }
     unreachable;
 }
+
+const InLeaf = struct {
+    // for local navigation inside of a leaf
+    piece_idx: usize,   // index of piece containing the target
+    offset: usize,      // offset of the target in the leaf's memory
+};
 
 fn locateInLeaf(leaf: *const Node, offset: usize) InLeaf {
     const items = leafPiecesConst(leaf).items;
@@ -243,8 +236,7 @@ fn locateInLeaf(leaf: *const Node, offset: usize) InLeaf {
         if (offset < acc + piece.len()) return .{ .piece_idx = idx, .offset = offset - acc };
         acc += piece.len();
     }
-    // return a sentinel to the end of the pieces array
-    return .{ .piece_idx = len, .offset = 0 };
+    unreachable;
 }
 
 // navigation within the tree structure
@@ -609,6 +601,11 @@ pub const TextBuffer = struct {
 
     pub fn materialize(self: *TextBuffer, w: anytype) @TypeOf(w).Error!void {
         try self.writeSubtree(w, self.root);
+    }
+
+    pub fn lineCount(self: *TextBuffer) usize {
+        // an empty document contains one newline
+        return self.root.weight_lines + 1;
     }
 
     // -------------------- WRITE HELPERS --------------------
