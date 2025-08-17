@@ -87,8 +87,6 @@ const Node = struct {
     // This allows for O(log n) searching, insertion, and deletion anywhere
     parent: ?*Node = null,
     weight_bytes: usize = 0,
-    // we want to avoid O(n) scan on document load. Permitting negative line weights allows us
-    // to track negative updates (deletes) without eagerly scanning
     weight_lines: usize = 0,
     // tagged union makes mutual exclusivity between node types explicit.
     // also keeps node size as small as possible by not storing two headers
@@ -385,14 +383,18 @@ fn bubbleByteDelta(node: *Node, delta: usize, is_neg: bool) void {
     }
 }
 
-fn bubbleLineDelta(node: *Node, delta: usize) void {
+fn bubbleLineDelta(node: *Node, delta: usize, is_neg: bool) void {
     var cur: ?*Node = node;
     while (cur) |n| {
-        n.weight_lines += delta;
+        if (is_neg) {
+            debug.dassert(n.weight_lines >= delta, "cannot give a node a negative line weight");
+            n.weight_lines -= delta;
+        } else {
+            n.weight_lines += delta;
+        }
         cur = n.parent;
     }
 }
-
 const BorrowPlan = struct { take_left: usize, take_right: usize };
 
 fn planBorrow(node: *Node, siblings: Siblings) BorrowPlan {
@@ -563,7 +565,7 @@ pub const TextBuffer = struct {
         // under the ideal case, new edits are appended to the end and extend an existing piece
         if (fastAppendIfPossible(leaf, add_offset, text.len, at, self.doc_len)) {
             bubbleByteDelta(leaf, text.len, false);
-            bubbleLineDelta(leaf, newlines);
+            bubbleLineDelta(leaf, newlines, false);
             self.doc_len += text.len;
             return;
         }
@@ -571,7 +573,7 @@ pub const TextBuffer = struct {
         const idx = try spliceIntoLeaf(pieces, loc, add_offset, text.len);
         mergeAround(leaf, idx);
         bubbleByteDelta(leaf, text.len, false);
-        bubbleLineDelta(leaf, newlines);
+        bubbleLineDelta(leaf, newlines, false);
         try self.bubbleOverflowUp(leaf);
         self.doc_len += text.len;
     }
@@ -588,7 +590,7 @@ pub const TextBuffer = struct {
             const in_leaf = locateInLeaf(leaf, offset);
             const removed = try self.deleteFromLeaf(leaf, in_leaf, remaining);
             bubbleByteDelta(leaf, removed.bytes, true);
-            bubbleLineDelta(leaf, removed.lines);
+            bubbleLineDelta(leaf, removed.lines, true);
             remaining -= removed.bytes;
             offset = 0;
             const next_leaf = nextLeaf(leaf);
@@ -816,8 +818,8 @@ pub const TextBuffer = struct {
                 mergeAround(dst, center);
                 bubbleByteDelta(src, moved.bytes, true);
                 bubbleByteDelta(dst, moved.bytes, false);
-                bubbleLineDelta(src, moved.lines);
-                bubbleLineDelta(dst, moved.lines);
+                bubbleLineDelta(src, moved.lines, true);
+                bubbleLineDelta(dst, moved.lines, false);
             },
             .internal => {
                 const src_children = childList(src);
@@ -840,8 +842,8 @@ pub const TextBuffer = struct {
                 for (adopted) |child| child.parent = dst;
                 bubbleByteDelta(src, moved.bytes, true);
                 bubbleByteDelta(dst, moved.bytes, false);
-                bubbleLineDelta(src, moved.lines);
-                bubbleLineDelta(dst, moved.lines);
+                bubbleLineDelta(src, moved.lines, true);
+                bubbleLineDelta(dst, moved.lines, false);
             },
         }
     }
