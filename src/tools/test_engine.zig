@@ -278,7 +278,7 @@ fn parseDeleteLine(line_in: []const u8) !TextOp {
 
 pub fn parseFixtureFromPath(parent_alloc: std.mem.Allocator, path: []const u8) !TestFixture {
     // 0) Read whole file with parent allocator, NOT arena
-    const contents = try std.fs.cwd().readFileAlloc(parent_alloc, path, 1 << 30);
+    const contents = try std.fs.cwd().readFileAlloc(parent_alloc, path, 1 << 32);
     defer parent_alloc.free(contents);
 
     // 1) Create fixture + arena

@@ -508,10 +508,10 @@ pub const TextEngine = struct {
     doc_len: usize,
     alloc: std.mem.Allocator,
 
-    pub fn init(alloc: std.mem.Allocator, original: []const u8) error{OutOfMemory, FileTooLarge}!TextEngine {
+    pub fn init(alloc: std.mem.Allocator, original: []const u8) error{OutOfMemory, FileTooBig}!TextEngine {
         // enforce the assertion about maximum file sizes even in release modes. 
         const limit = @as(usize, 1) << (@bitSizeOf(usize) - 1);
-        if (original.len >= limit) return error.FileTooLarge;
+        if (original.len >= limit) return error.FileTooBig;
         // initialize the root of the tree
         const leaf = try initLeaf(alloc);
         if (original.len > 0) {
