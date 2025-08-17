@@ -75,6 +75,7 @@ const Piece = struct {
 };
 
 // -------------------- ROPE IMPLEMENTATION --------------------
+// Underlying tree for the piece table
 
 const MAX_BRANCH = 128;
 const MIN_BRANCH = 8;
@@ -411,6 +412,7 @@ fn planBorrow(node: *Node, siblings: Siblings) BorrowPlan {
 }
 
 // -------------------- LAZY LINE INDEXING IMPLEMENTATION --------------------
+// Maintains a lazy way to map buffer indices to newline counts
 
 const PAGE_SIZE = 4 * 1024;
 
@@ -495,13 +497,74 @@ const NewLineIndex = struct {
 };
 
 inline fn countInSlice(slice: []const u8) usize {
-    // helper for directly counting newlines between a start and end value
+    // helper for directly counting newlines in any given buffer slice
     var count: usize = 0;
     for (slice) |c| { if (c == '\n') count += 1; }
     return count;
 }
 
+// -------------------- SLICE ITERATOR IMPLEMENTATION --------------------
+// Read-only no-copy views into the text buffer.
+// This is how consumers recieve views into the document
+
+pub const SliceIter = struct {
+    buffer: *TextBuffer,
+    leaf: *Node,
+    piece_idx: usize,
+    piece_offset: usize,
+    remaining: usize,
+
+    fn init(buffer: *TextBuffer, start: usize, len: usize) SliceIter {
+        // find the location corresponding to the start of the range
+        const found = findAt(buffer.root, start);
+        const loc = locateInLeaf(found.leaf, found.offset);
+        return .{
+            .buffer = buffer,
+            .leaf = found.leaf,
+            .piece_idx = loc.piece_idx,
+            .piece_offset = loc.offset,
+            .remaining = len,
+        };
+    }
+
+    pub fn next(self: *SliceIter) ?[]const u8 {
+        // return the next slice in the range.
+        // When there is nothing left, returns null
+        if (self.remaining == 0) return null;
+        var pieces = leafPiecesConst(self.leaf).items;
+        // hop to the next leaf if we ran out of pieces in this one
+        while (self.piece_idx >= pieces.len) {
+            const nxt = nextLeaf(self.leaf) orelse return null;
+            self.leaf = nxt;
+            // now we're in a new leaf, reset the offsets
+            pieces = leafPiecesConst(self.leaf).items;
+            self.piece_idx = 0;
+            self.piece_offset = 0;
+        }
+        // identify which buffer to slice from
+        const piece = pieces[self.piece_idx];
+        const src = switch (piece.buf()) {
+            .Original => self.buffer.original,
+            .Add      => self.buffer.add.items,
+        };
+        // create the actual current slice
+        const bytes_available = piece.len() - self.piece_offset;
+        const take = @min(bytes_available, self.remaining);
+        const start = piece.off + self.piece_offset;
+        const slice = src[start..start + take];
+        // advance iterator state
+        self.remaining    -= take;
+        self.piece_offset += take;
+        if (self.piece_offset == piece.len()) {
+            self.piece_idx   += 1;
+            self.piece_offset = 0;
+        }
+        return slice;
+    }
+};
+
 // -------------------- PIECE TABLE IMPLEMENTATION --------------------
+// Actual text buffer implementation, this is the public interface
 
 pub const TextBuffer = struct {
     // piece table collection object.
@@ -597,18 +660,15 @@ pub const TextBuffer = struct {
         self.doc_len -= len;
     }
 
-    pub fn materialize(self: *TextBuffer, w: anytype) @TypeOf(w).Error!void {
-        try self.writeSubtree(w, self.root);
-    }
-
     pub fn lineCount(self: *TextBuffer) usize {
-        // an empty document contains one newline
+        // an empty document contains one line
         return self.root.weight_lines + 1;
     }
 
     pub fn lineOfByte(self: *TextBuffer, at: usize) error{OutOfMemory}!usize {
         // map any index in the working document to a line number
         debug.dassert(at <= self.doc_len, "offset out of range");
+        if (at == self.doc_len) return self.root.weight_lines;
         var node = self.root;
         var offset = at;
         var lines_before: usize = 0;
@@ -685,35 +745,22 @@ pub const TextBuffer = struct {
         @panic("max iterations reached without finding line in document");
     }
 
-    // -------------------- WRITE HELPERS --------------------
-
-    fn writeSubtree(self: *TextBuffer, w: anytype, node: *const Node) @TypeOf(w).Error!void {
-        switch (node.children) {
-            .leaf => try self.writeLeaf(w, node),
-            .internal => |*children| try self.writeChildren(w, children.items, 0),
-        }
+    pub fn getSliceIter(self: *TextBuffer, start: usize, len: usize) SliceIter {
+        debug.dassert(start + len <= self.doc_len, "view out of bounds");
+        debug.dassert(len > 0, "cannot provide an empty view");
+        return SliceIter.init(self, start, len);
     }
 
-    fn writeLeaf(self: *TextBuffer, w: anytype, leaf: *const Node) @TypeOf(w).Error!void {
-        // helper method to write all of the pieces from a given leaf
-        const pieces = leafPiecesConst(leaf);
-        for (pieces.items) |piece| {
-            const src = switch (piece.buf()) {
-                .Original => self.original,
-                .Add => self.add.items,
-            };
-            debug.dassert(piece.off <= src.len, "piece offset must be inside it's source buffer");
-            debug.dassert(piece.len() <= src.len - piece.off, "full piece slice must be inside source buffer");
-            try w.writeAll(src[piece.off .. piece.off + piece.len()]);
-        }
+    pub fn materializeRange(self: *TextBuffer, w: anytype, start: usize, len: usize) @TypeOf(w).Error!void {
+        // when a view should be written directly to a writer
+        if (len == 0) return;
+        var it = self.getSliceIter(start, len);
+        while (it.next()) |slice| try w.writeAll(slice);
     }
 
-    fn writeChildren(self: *TextBuffer, w: anytype, children: []const *Node, idx: usize) @TypeOf(w).Error!void {
-        if (idx >= children.len) return;
-        // traverse deeper on leftmost node
-        try self.writeSubtree(w, children[idx]);
-        // traverse left to right inside this branch
-        return self.writeChildren(w, children, idx + 1);
+    pub fn materialize(self: *TextBuffer, w: anytype) @TypeOf(w).Error!void {
+        // when the entire document should be written directly to a writer (e.g. saving)
+        try self.materializeRange(w, 0, self.doc_len);
     }
 
     // -------------------- INSERT HELPERS --------------------
