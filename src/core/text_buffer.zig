@@ -461,7 +461,7 @@ const NewLineIndex = struct {
         while (idx <= page) : (idx += 1) {
             const start = idx * PAGE_SIZE;
             const end = @min(start + PAGE_SIZE, buf.len);
-            const count = countInSlice(buf[start..end]);
+            const count = utils.countNewlinesInSlice(buf[start..end]);
             const prev = if (idx == 0) 0 else self.prefix.items[idx - 1];
             self.prefix.items[idx] = prev + count;
             self.done.items[idx] = true;
@@ -475,11 +475,11 @@ const NewLineIndex = struct {
         const page_0 = start / PAGE_SIZE;
         const page_1 = (end - 1) / PAGE_SIZE;
         // range inside a single page, count directly
-        if (page_0 == page_1) return countInSlice(buf[start..end]);
+        if (page_0 == page_1) return utils.countNewlinesInSlice(buf[start..end]);
         // generic case: we count left and right edges and middle is handled by precomputed prefixes
         var total: usize = 0;
         const left_edge = (page_0 + 1) * PAGE_SIZE;
-        total += countInSlice(buf[start..left_edge]);
+        total += utils.countNewlinesInSlice(buf[start..left_edge]);
         // ensure prefixes are counted up to and including the end page
         var page = page_0;
         while (page <= page_1) : (page += 1) self.ensurePage(buf, page);
@@ -491,17 +491,10 @@ const NewLineIndex = struct {
         }
         // right partial page
         const right_edge = page_1 * PAGE_SIZE;
-        total += countInSlice(buf[right_edge..end]);
+        total += utils.countNewlinesInSlice(buf[right_edge..end]);
         return total;
     }
 };
-
-inline fn countInSlice(slice: []const u8) usize {
-    // helper for directly counting newlines in any given buffer slice
-    var count: usize = 0;
-    for (slice) |c| { if (c == '\n') count += 1; }
-    return count;
-}
 
 // -------------------- SLICE ITERATOR IMPLEMENTATION --------------------
 // Read-only no-copy views into the text buffer.
@@ -660,11 +653,6 @@ pub const TextBuffer = struct {
         self.doc_len -= len;
     }
 
-    pub fn lineCount(self: *TextBuffer) usize {
-        // an empty document contains one line
-        return self.root.weight_lines + 1;
-    }
-
     pub fn lineOfByte(self: *TextBuffer, at: usize) error{OutOfMemory}!usize {
         // map any index in the working document to a line number
         debug.dassert(at <= self.doc_len, "offset out of range");
@@ -743,6 +731,18 @@ pub const TextBuffer = struct {
             }
         }
         @panic("max iterations reached without finding line in document");
+    }
+
+    pub fn peek(self: *TextBuffer, at: usize) u8 {
+        debug.dassert(at < self.doc_len, "can't peek outside of document");
+        const found = findAt(self.root, at);
+        const loc = locateInLeaf(found.leaf, found.offset);
+        const piece = leafPiecesConst(found.leaf).items[loc.piece_idx];
+        const idx = piece.off + loc.offset;
+        switch (piece.buf()) {
+            .Original => return self.original[idx],
+            .Add      => return self.add.items[idx],
+        }
     }
 
     pub fn getSliceIter(self: *TextBuffer, start: usize, len: usize) SliceIter {

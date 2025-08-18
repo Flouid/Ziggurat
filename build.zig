@@ -34,6 +34,17 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    const doc_mod = b.addModule("document", .{
+        .root_source_file = b.path("src/core/document.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "debug", .module = debug_mod },
+            .{ .name = "utils", .module = utils_mod },
+            .{ .name = "buffer", .module = buffer_mod },
+        },
+    });
+
     const fixture_gen = b.addExecutable(.{
         .name = "test-engine",
         .root_module = b.createModule(.{
@@ -53,9 +64,14 @@ pub fn build(b: *std.Build) void {
     const buffer_tests = b.addTest(.{
         .root_module = buffer_mod,
     });
+    const doc_tests = b.addTest(.{
+        .root_module = doc_mod,
+    });
 
     const run_buffer_tests = b.addRunArtifact(buffer_tests);
+    const run_doc_tests = b.addRunArtifact(doc_tests);
 
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_buffer_tests.step);
+    test_step.dependOn(&run_doc_tests.step);
 }
