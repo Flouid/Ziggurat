@@ -52,11 +52,9 @@ pub const TextBuffer = struct {
     pub fn insert(self: *TextBuffer, at: usize, text: []const u8) error{OutOfMemory}!void {
         debug.dassert(at <= self.doc_len, "cannot insert outside of the document");
         debug.dassert(text.len > 0, "cannot insert empty text");
-
         // invariants, these are needed regardless of case
         const add_offset = self.add.items.len;
         try self.add.appendSlice(text);
-
         // case for empty doc
         if (self.pieces.items.len == 0) {
             try self.pieces.append(.{ .buf = .Add, .off = 0, .len = text.len });
@@ -76,10 +74,8 @@ pub const TextBuffer = struct {
                 return;
             }
         }
-
         // locate the piece containing the split position
         var idx = self.findPiece(at);
-
         // split the existing piece into a prefix and posfix
         const old = self.pieces.items[idx];
         const start_idx = self.prefix.items[idx];
@@ -89,24 +85,16 @@ pub const TextBuffer = struct {
         prefix.len = len_prefix;
         posfix.off += len_prefix;
         posfix.len -= len_prefix;
-
         // build 1-3 replacement pieces and insert them into the piece table
         var buf: [3]Piece = undefined;
         var n: usize = 0;
-        if (prefix.len != 0) {
-            buf[n] = prefix;
-            n += 1;
-        }
+        if (prefix.len != 0) { buf[n] = prefix; n += 1; }
         buf[n] = .{ .buf = .Add, .off = add_offset, .len = text.len };
         n += 1;
-        if (posfix.len != 0) {
-            buf[n] = posfix;
-            n += 1;
-        }
+        if (posfix.len != 0) { buf[n] = posfix; n += 1; }
         self.pieces.items[idx] = buf[0];
         if (n >= 2) try self.pieces.insertSlice(idx + 1, buf[1..n]);
         self.doc_len += text.len;
-
         // see if there are any pieces than can be merged, then rebuild the prefix
         idx = self.mergeAround(idx);
         try self.rebuildPrefix(idx);
@@ -116,28 +104,19 @@ pub const TextBuffer = struct {
         debug.dassert(at + count <= self.doc_len, "cannot delete outside of document");
         debug.dassert(count > 0, "cannot delete 0 characters");
         debug.dassert(self.pieces.items.len > 0, "cannot delete from empty document");
-
         var idx = self.findPiece(at);
         const old = &self.pieces.items[idx];
         const start_idx = self.prefix.items[idx];
         const len_prefix = at - start_idx;
-
         // case 1: deletion localized in a single piece
         if (count <= old.len - len_prefix) {
             const len_posfix = old.len - len_prefix - count;
             // delete the entire piece
-            if (len_prefix == 0 and len_posfix == 0) {
-                _ = self.pieces.orderedRemove(idx);
-            }
+            if (len_prefix == 0 and len_posfix == 0) { _ = self.pieces.orderedRemove(idx);}
             // keep just the prefix
-            else if (len_prefix > 0 and len_posfix == 0) {
-                old.len = len_prefix;
-            }
+            else if (len_prefix > 0 and len_posfix == 0) { old.len = len_prefix; }
             // keep just the posfix
-            else if (len_prefix == 0 and len_posfix > 0) {
-                old.off += count;
-                old.len = len_posfix;
-            }
+            else if (len_prefix == 0 and len_posfix > 0) { old.off += count; old.len = len_posfix; }
             // split piece into prefix and posfix
             else {
                 old.len = len_prefix;
@@ -152,7 +131,7 @@ pub const TextBuffer = struct {
             if (len_prefix == 0) {
                 remain -= old.len;
                 _ = self.pieces.orderedRemove(idx);
-                // general case: some prefix is left over, modify the current piece in-place
+            // general case: some prefix is left over, modify the current piece in-place
             } else {
                 remain -= old.len - len_prefix;
                 old.len = len_prefix;
@@ -172,9 +151,7 @@ pub const TextBuffer = struct {
                 }
             }
         }
-
         self.doc_len -= count;
-
         // last piece deleted, early return
         if (self.pieces.items.len == 0) {
             try self.rebuildPrefix(0);
@@ -191,7 +168,7 @@ pub const TextBuffer = struct {
         for (self.pieces.items) |piece| {
             const src = switch (piece.buf) {
                 .Original => self.original,
-                .Add => self.add.items,
+                .Add      => self.add.items,
             };
             debug.dassert(piece.off <= src.len, "piece offset must be inside it's source buffer");
             debug.dassert(piece.len <= src.len - piece.off, "full piece slice must be inside source buffer");
@@ -221,7 +198,6 @@ pub const TextBuffer = struct {
         try self.prefix.resize(self.pieces.items.len);
         if (self.pieces.items.len == 0) return;
         if (from == 0) self.prefix.items[0] = 0;
-
         var i: usize = if (from == 0) 1 else from;
         while (i < self.pieces.items.len) : (i += 1) {
             self.prefix.items[i] = self.prefix.items[i - 1] + self.pieces.items[i - 1].len;
@@ -247,10 +223,7 @@ pub const TextBuffer = struct {
         // given a "center" index, attempt to merge it's left and right neighbors
         debug.dassert(idx < self.pieces.items.len, "merge index must be inside piece table");
         var i = idx;
-        if (i > 0 and self.canMerge(i - 1, i)) {
-            self.merge(i - 1, i);
-            i -= 1;
-        }
+        if (i > 0 and self.canMerge(i - 1, i)) { self.merge(i - 1, i); i -= 1; }
         if (i + 1 < self.pieces.items.len and self.canMerge(i, i + 1)) self.merge(i, i + 1);
         // the center index might have changed, so return it for rebuilding the prefix
         return i;
