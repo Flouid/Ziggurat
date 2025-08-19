@@ -4,17 +4,11 @@ const utils = @import("utils");
 const TextBuffer = @import("buffer").TextBuffer;
 const SliceIter = @import("buffer").SliceIter;
 const TextPos = @import("types").TextPos;
+const Span = @import("types").Span;
 
 // The logical document layer.
 // The text buffer sits below and operates purely in terms of bytes.
 // The document adds abstraction and operates in terms of lines, columns, and characters.
-
-pub const Span = struct {
-    // an exclusive span [start, end) for use within a line + a newline excluding length
-    start: usize,
-    end: usize,
-    len: usize,
-};
 
 pub const Caret = struct {
     // the logical caret inside the document
@@ -40,8 +34,8 @@ pub const Document = struct {
 
     // pass-through length helpers
 
-    pub fn size(self: *Document) usize { return self.buffer.doc_len; }
-    pub fn lineCount(self: *Document) usize { return self.buffer.root.weight_lines + 1; }
+    pub fn size(self: *const Document) usize { return self.buffer.doc_len; }
+    pub fn lineCount(self: *const Document) usize { return self.buffer.root.weight_lines + 1; }
 
     // editing around the cursor
 
@@ -153,29 +147,26 @@ pub const Document = struct {
         c.byte = span.start + c.pos.col;
     }
 
-    // materialization and iteration over lines
+    // materialization and span generation
 
-    pub fn iterLines(self: *Document, first: usize, last: usize) error{OutOfMemory}!SliceIter {
-        debug.dassert(first <= last, "cannot iterate over a negative range");
-        debug.dassert(last < self.lineCount(), "last line outside of document");
-        const first_byte = try self.lineStart(first);
-        const last_byte = try self.lineEnd(last);
-        debug.dassert(first_byte <= last_byte, "line bytes cannot have negative range");
-        return self.buffer.getSliceIter(first_byte, last_byte - first_byte);
-    }
-
-    pub fn materializeLines(self: *Document, w: anytype, first: usize, last: usize) !void {
-        debug.dassert(first <= last, "cannot materialize a negative range");
-        debug.dassert(last < self.lineCount(), "last line outside of document");
-        const first_byte = try self.lineStart(first);
-        const last_byte = try self.lineEnd(last);
-        debug.dassert(first_byte <= last_byte, "line bytes cannot have negative range");
-        try self.buffer.materializeRange(w, first_byte, last_byte - first_byte);
+    pub fn materializeRange(self: *Document, w: anytype, start: usize, len: usize) @TypeOf(w).Error!void {
+        // pass-through method for materializing a range of bytes
+        try self.buffer.materializeRange(w, start, len);
     }
 
     pub fn materialize(self: *Document, w: anytype) @TypeOf(w).Error!void {
         // pass-through method for materializing a full document
         try self.buffer.materialize(w);
+    }
+
+    pub fn lineSpan(self: *Document, line: usize) error{OutOfMemory}!Span {
+        debug.dassert(line < self.lineCount(), "line outside of document");
+        const start = try self.lineStart(line);
+        const end = try self.lineEnd(line);
+        debug.dassert(end >= start, "line cannot have negative length");
+        // subtracts newline for all lines except the last (no newline)
+        const len = if (line + 1 < self.lineCount()) end - start - 1 else end - start;
+        return .{ .start = start, .len = len };
     }
 
     // navigation helpers
@@ -188,16 +179,6 @@ pub const Document = struct {
     fn lineEnd(self: *Document, line: usize) error{OutOfMemory}!usize {
         debug.dassert(line < self.lineCount(), "line outside of document");
         return if (line + 1 < self.lineCount()) self.buffer.byteOfLine(line + 1) else self.size();
-    }
-
-    fn lineSpan(self: *Document, line: usize) error{OutOfMemory}!Span {
-        debug.dassert(line < self.lineCount(), "line outside of document");
-        const start = try self.lineStart(line);
-        const end = try self.lineEnd(line);
-        debug.dassert(end >= start, "line cannot have negative length");
-        // subtracts newline for all lines except the last (no newline)
-        const len = if (line + 1 < self.lineCount()) end - start - 1 else end - start;
-        return .{ .start = start, .end = end, .len = len };
     }
 
     fn byteToPos(self: *Document, at: usize) error{OutOfMemory}!TextPos {
@@ -357,15 +338,4 @@ test "cursorInsert updates line/col and preferred_col" {
     try std.testing.expectEqual(@as(usize, 1), doc.caret.pos.line);
     try std.testing.expectEqual(@as(usize, 3), doc.caret.pos.col);
     try std.testing.expectEqual(doc.caret.pos.col, doc.caret.preferred_col);
-}
-
-test "materializeLines returns exact byte range for middle line" {
-    const alloc = std.testing.allocator;
-    const src = "aaa\nbbb\nccc\n";
-    var doc = try Document.init(alloc, src);
-    defer doc.deinit();
-    var out = std.ArrayList(u8).init(alloc);
-    defer out.deinit();
-    try doc.materializeLines(out.writer(), 1, 1);
-    try std.testing.expectEqualSlices(u8, "bbb\n", out.items);
 }

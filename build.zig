@@ -65,6 +65,17 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    const layout_mod = b.addModule("layout", .{
+        .root_source_file = b.path("src/core/layout.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "document", .module = doc_mod },
+            .{ .name = "viewport", .module = viewport_mod },
+            .{ .name = "types", .module = types_mod },
+        },
+    });
+
     const fixture_gen = b.addExecutable(.{
         .name = "test-engine",
         .root_module = b.createModule(.{
@@ -90,13 +101,18 @@ pub fn build(b: *std.Build) void {
     const viewport_tests = b.addTest(.{
         .root_module = viewport_mod,
     });
+    const layout_tests = b.addTest(.{
+        .root_module = layout_mod,
+    });
 
     const run_buffer_tests = b.addRunArtifact(buffer_tests);
     const run_doc_tests = b.addRunArtifact(doc_tests);
     const run_viewport_tests = b.addRunArtifact(viewport_tests);
+    const run_layout_tests = b.addRunArtifact(layout_tests);
 
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_buffer_tests.step);
     test_step.dependOn(&run_doc_tests.step);
     test_step.dependOn(&run_viewport_tests.step);
+    test_step.dependOn(&run_layout_tests.step);
 }
