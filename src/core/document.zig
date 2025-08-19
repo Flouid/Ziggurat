@@ -320,6 +320,36 @@ test "cursorBackspace across newline updates line/col correctly" {
     try std.testing.expectEqual(@as(usize, 2), doc.cursor.byte);
 }
 
+test "empty lines handled correctly" {
+    const alloc = std.testing.allocator;
+    var doc = try Document.init(alloc, "\n\n\n");
+    defer doc.deinit();
+    try doc.moveDown();
+    try std.testing.expectEqual(@as(usize, 1), doc.cursor.byte);
+    try std.testing.expectEqual(@as(usize, 1), doc.cursor.pos.line);
+    try std.testing.expectEqual(@as(usize, 0), doc.cursor.pos.col);
+    try doc.moveRight();
+    try std.testing.expectEqual(@as(usize, 2), doc.cursor.byte);
+    try std.testing.expectEqual(@as(usize, 2), doc.cursor.pos.line);
+    try std.testing.expectEqual(@as(usize, 0), doc.cursor.pos.col);
+    try doc.cursorInsert("\n");
+    try std.testing.expectEqual(@as(usize, 3), doc.cursor.byte);
+    try std.testing.expectEqual(@as(usize, 3), doc.cursor.pos.line);
+    try std.testing.expectEqual(@as(usize, 0), doc.cursor.pos.col);
+    try doc.cursorBackspace(1);
+    try std.testing.expectEqual(@as(usize, 2), doc.cursor.byte);
+    try std.testing.expectEqual(@as(usize, 2), doc.cursor.pos.line);
+    try std.testing.expectEqual(@as(usize, 0), doc.cursor.pos.col);
+    try doc.moveLeft();
+    try std.testing.expectEqual(@as(usize, 1), doc.cursor.byte);
+    try std.testing.expectEqual(@as(usize, 1), doc.cursor.pos.line);
+    try std.testing.expectEqual(@as(usize, 0), doc.cursor.pos.col);
+    try doc.moveUp();
+    try std.testing.expectEqual(@as(usize, 0), doc.cursor.byte);
+    try std.testing.expectEqual(@as(usize, 0), doc.cursor.pos.line);
+    try std.testing.expectEqual(@as(usize, 0), doc.cursor.pos.col);
+}
+
 test "cursorInsert updates line/col and preferred_col" {
     const alloc = std.testing.allocator;
     var doc = try Document.init(alloc, "");
