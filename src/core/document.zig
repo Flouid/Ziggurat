@@ -196,7 +196,7 @@ pub const Document = struct {
     }
 
     fn lineSpan(self: *Document, line: usize) error{OutOfMemory}!Span {
-        debug.dassert(line <= self.lineCount(), "line outside of document");
+        debug.dassert(line < self.lineCount(), "line outside of document");
         const start = try self.lineStart(line);
         const end = try self.lineEnd(line);
         debug.dassert(end >= start, "line cannot have negative length");
@@ -214,7 +214,7 @@ pub const Document = struct {
     }
 
     fn posToByte(self: *Document, pos: Pos) error{OutOfMemory}!usize {
-        debug.dassert(pos.line <= self.lineCount(), "line outside of document");
+        debug.dassert(pos.line < self.lineCount(), "line outside of document");
         const span = try self.lineSpan(pos.line);
         debug.dassert(pos.col <= span.len, "column outside of line");
         const start = try self.buffer.byteOfLine(pos.line);
