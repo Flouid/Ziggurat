@@ -31,10 +31,10 @@ pub const Document = struct {
     buffer: TextBuffer,
     cursor: Cursor,
 
-    pub fn init(alloc: std.mem.Allocator, original: []const u8) error{OutOfMemory}!Document {
+    pub fn init(alloc: std.mem.Allocator, original: []const u8) error{ OutOfMemory, FileTooBig }!Document {
         return .{ 
             .buffer = try TextBuffer.init(alloc, original),
-            .cursor = .{ .byte = 0, .pos = .{ 0, 0 }, .preferred_col = 0, }
+            .cursor = .{ .byte = 0, .pos = .{ .line = 0, .col = 0 }, .preferred_col = 0, }
         };
     }
 
@@ -47,46 +47,7 @@ pub const Document = struct {
     pub fn size(self: *Document) usize { return self.buffer.doc_len; }
     pub fn lineCount(self: *Document) usize { return self.buffer.root.weight_lines + 1; }
 
-    // navigation helpers
-
-    pub fn lineStart(self: *Document, line: usize) error{OutOfMemory}!usize {
-        debug.dassert(line < self.lineCount(), "line outside of document");
-        return self.buffer.byteOfLine(line);
-    }
-
-    pub fn lineEnd(self: *Document, line: usize) error{OutOfMemory}!usize {
-        debug.dassert(line < self.lineCount(), "line outside of document");
-        return if (line + 1 < self.lineCount()) self.buffer.byteOfLine(line + 1) else self.size();
-    }
-
-    pub fn lineSpan(self: *Document, line: usize) error{OutOfMemory}!Span {
-        debug.dassert(line < self.lineCount(), "line outside of document");
-        const start = try self.lineStart(line);
-        const end = try self.lineEnd(line);
-        return .{ .start = start, .end = end };
-    }
-
-    pub fn lineLen(self: *Document, line: usize) error{OutOfMemory}!usize {
-        debug.dassert(line < self.lineCount(), "line outside of document");
-        const span = try self.lineSpan(line);
-        return span.end - span.start;
-    }
-
-    pub fn byteToPos(self: *Document, at: usize) error{OutOfMemory}!Pos {
-        debug.dassert(at <= self.size(), "index outside of document");
-        // NOTE: this double traversal is technically unneccesary, but would require another big helper
-        const line = try self.buffer.lineOfByte(at);
-        const start = try self.buffer.byteOfLine(line);
-        return .{ .line = line, .col = at - start };
-    }
-
-    pub fn posToByte(self: *Document, pos: Pos) error{OutOfMemory}!usize {
-        const start = try self.buffer.byteOfLine(pos.line);
-        // NOTE: implicit assumption that bytes and columns are interchangable
-        return start + pos.col;
-    }
-
-    // editing and cursor traversal
+    // editing around the cursor
 
     pub fn cursorInsert(self: *Document, text: []const u8) error{OutOfMemory}!void {
         debug.dassert(text.len > 0, "cannot insert empty text at cursor");
@@ -104,6 +65,7 @@ pub const Document = struct {
             c.pos.col = text.len - last_newline - 1;
         }
         c.byte += text.len;
+        c.preferred_col = c.pos.col;
     }
 
     pub fn cursorBackspace(self: *Document, n: usize) error{OutOfMemory}!void {
@@ -127,23 +89,88 @@ pub const Document = struct {
             const line_start = try self.lineStart(c.pos.line);
             c.pos.col = c.byte - line_start;
         }
+        c.preferred_col = c.pos.col;
+    }
+
+    // cursor traversal
+
+    pub fn moveTo(self: *Document, pos: Pos) error{OutOfMemory}!void {
+        const c = &self.cursor;
+        c.byte = try self.posToByte(pos);
+        c.pos = pos;
+        c.preferred_col = c.pos.col;
+    }
+
+    pub fn moveLeft(self: *Document) error{OutOfMemory}!void {
+        const c = &self.cursor;
+        if (c.byte == 0) return;
+        c.byte -= 1;
+        if (c.pos.col > 0) { c.pos.col -= 1; }
+        else { c.pos = try self.byteToPos(c.byte); }
+        c.preferred_col = c.pos.col;
+    }
+
+    pub fn moveRight(self: *Document) error{OutOfMemory}!void {
+        const c = &self.cursor;
+        if (c.byte >= self.size()) return;
+        c.byte += 1;
+        const line_end = try self.lineEnd(c.pos.line);
+        if (c.byte < line_end) { c.pos.col += 1; }
+        else {
+            c.pos.line += 1;
+            c.pos.col = 0;
+        }
+        c.preferred_col = c.pos.col;
+    }
+
+    pub fn moveHome(self: *Document) error{OutOfMemory}!void {
+        const c = &self.cursor;
+        c.byte = try self.lineStart(c.pos.line);
+        c.pos.col = 0;
+        c.preferred_col = 0;
+    }
+
+    pub fn moveEnd(self: *Document) error{OutOfMemory}!void {
+        const c = &self.cursor;
+        const span = try self.lineSpan(c.pos.line);
+        c.byte = span.end;
+        c.pos.col = span.end - span.start;
+        c.preferred_col = c.pos.col;
+    }
+
+    pub fn moveUp(self: *Document) error{OutOfMemory}!void {
+        const c = &self.cursor;
+        if (c.pos.line == 0) { self.moveHome(); return; }
+        c.pos.line -= 1;
+        const span = try self.lineSpan(c.pos.line);
+        c.pos.col = @min(c.preferred_col, span.end - span.start);
+        c.byte = span.start + c.pos.col;
+    }
+
+    pub fn moveDown(self: *Document) error{OutOfMemory}!void {
+        const c = &self.cursor;
+        if (c.pos.line + 1 >= self.lineCount()) { self.moveEnd(); return; }
+        c.pos.line += 1;
+        const span = try self.lineSpan(c.pos.line);
+        c.pos.col = @min(c.preferred_col, span.end - span.start);
+        c.byte = span.start + c.pos.col;
     }
 
     // materialization and iteration over lines
 
-    pub fn iterLines(self: *Document, first: usize, last: usize) SliceIter {
+    pub fn iterLines(self: *Document, first: usize, last: usize) error{OutOfMemory}!SliceIter {
         debug.dassert(first <= last, "cannot iterate over a negative range");
         debug.dassert(last < self.lineCount(), "last line outside of document");
-        const first_byte = self.lineStart(first) catch unreachable;
-        const last_byte = self.lineEnd(last) catch unreachable;
+        const first_byte = try self.lineStart(first);
+        const last_byte = try self.lineEnd(last);
         return self.buffer.getSliceIter(first_byte, last_byte - first_byte);
     }
 
-    pub fn materializeLines(self: *Document, w: anytype, first: usize, last: usize) @TypeOf(w).Error!void {
+    pub fn materializeLines(self: *Document, w: anytype, first: usize, last: usize) !void {
         debug.dassert(first <= last, "cannot materialize a negative range");
         debug.dassert(last < self.lineCount(), "last line outside of document");
-        const first_byte = self.lineStart(first) catch unreachable;
-        const last_byte = self.lineEnd(last) catch unreachable;
+        const first_byte = try self.lineStart(first);
+        const last_byte = try self.lineEnd(last);
         try self.buffer.materializeRange(w, first_byte, last_byte - first_byte);
     }
 
@@ -151,4 +178,53 @@ pub const Document = struct {
         // pass-through method for materializing a full document
         try self.buffer.materialize(w);
     }
+
+    // navigation helpers
+
+    fn lineStart(self: *Document, line: usize) error{OutOfMemory}!usize {
+        debug.dassert(line < self.lineCount(), "line outside of document");
+        return self.buffer.byteOfLine(line);
+    }
+
+    fn lineEnd(self: *Document, line: usize) error{OutOfMemory}!usize {
+        debug.dassert(line < self.lineCount(), "line outside of document");
+        return if (line + 1 < self.lineCount()) self.buffer.byteOfLine(line + 1) else self.size();
+    }
+
+    fn lineSpan(self: *Document, line: usize) error{OutOfMemory}!Span {
+        debug.dassert(line < self.lineCount(), "line outside of document");
+        const start = try self.lineStart(line);
+        const end = try self.lineEnd(line);
+        return .{ .start = start, .end = end };
+    }
+
+    fn lineLen(self: *Document, line: usize) error{OutOfMemory}!usize {
+        debug.dassert(line < self.lineCount(), "line outside of document");
+        const span = try self.lineSpan(line);
+        return span.end - span.start;
+    }
+
+    fn byteToPos(self: *Document, at: usize) error{OutOfMemory}!Pos {
+        debug.dassert(at <= self.size(), "index outside of document");
+        // NOTE: this double traversal is technically unneccesary, but would require another big helper
+        const line = try self.buffer.lineOfByte(at);
+        const start = try self.buffer.byteOfLine(line);
+        return .{ .line = line, .col = at - start };
+    }
+
+    fn posToByte(self: *Document, pos: Pos) error{OutOfMemory}!usize {
+        debug.dassert(pos.line <= self.lineCount(), "line outside of document");
+        const span = try self.lineSpan(pos.line);
+        debug.dassert(pos.col <= span.end - span.start, "column outside of line");
+        const start = try self.buffer.byteOfLine(pos.line);
+        // NOTE: implicit assumption that bytes and columns are interchangable
+        return start + pos.col;
+    }
 };
+
+test "compiles" {
+    const alloc = std.testing.allocator;
+    var doc = try Document.init(alloc, "text");
+    defer doc.deinit();
+    try std.testing.expect(true);
+}
