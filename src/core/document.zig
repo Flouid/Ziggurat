@@ -61,9 +61,9 @@ pub const Document = struct {
         else {
             c.pos.line += newlines;
             // figure out how many characters were after the last newline in the inserted text
-            var last_newline: usize = 0;
-            for (text, 0..) |b, i| { if (b == '\n') last_newline = i; }
-            c.pos.col = text.len - last_newline - 1;
+            var i = text.len - 1;
+            while (i > 0 and text[i] != '\n') : (i -= 1) {}
+            c.pos.col = text.len - i - 1;
         }
         c.byte += text.len;
         c.preferred_col = c.pos.col;
@@ -114,13 +114,14 @@ pub const Document = struct {
     pub fn moveRight(self: *Document) error{OutOfMemory}!void {
         const c = &self.cursor;
         if (c.byte >= self.size()) return;
-        c.byte += 1;
         const line_end = try self.lineEnd(c.pos.line);
-        if (c.byte < line_end) { c.pos.col += 1; }
-        else {
-            c.pos.line += 1;
+        // move to next line, account for EOF special case
+        if (c.byte + 1 == line_end and line_end < self.size()) {
+            c.pos.line += 1; 
             c.pos.col = 0;
         }
+        else { c.pos.col += 1; }
+        c.byte += 1;
         c.preferred_col = c.pos.col;
     }
 
@@ -195,7 +196,7 @@ pub const Document = struct {
     }
 
     fn lineSpan(self: *Document, line: usize) error{OutOfMemory}!Span {
-        debug.dassert(line < self.lineCount(), "line outside of document");
+        debug.dassert(line <= self.lineCount(), "line outside of document");
         const start = try self.lineStart(line);
         const end = try self.lineEnd(line);
         debug.dassert(end >= start, "line cannot have negative length");
@@ -215,7 +216,7 @@ pub const Document = struct {
     fn posToByte(self: *Document, pos: Pos) error{OutOfMemory}!usize {
         debug.dassert(pos.line <= self.lineCount(), "line outside of document");
         const span = try self.lineSpan(pos.line);
-        debug.dassert(pos.col <= span.end - span.start, "column outside of line");
+        debug.dassert(pos.col <= span.len, "column outside of line");
         const start = try self.buffer.byteOfLine(pos.line);
         // NOTE: implicit assumption that bytes and columns are interchangable
         return start + pos.col;
@@ -234,6 +235,20 @@ test "moveRight at EOL without trailing newline clamps at EOF" {
     try std.testing.expectEqual(@as(usize, 3), doc.cursor.byte);
     try std.testing.expectEqual(@as(usize, 0), doc.cursor.pos.line);
     try std.testing.expectEqual(@as(usize, 3), doc.cursor.pos.col);
+}
+
+test "moveRight off EOF clamps" {
+    const alloc = std.testing.allocator;
+    var doc = try Document.init(alloc, "a");
+    defer doc.deinit();
+    try doc.moveRight();
+    try std.testing.expectEqual(@as(usize, 1), doc.cursor.byte);
+    try std.testing.expectEqual(@as(usize, 0), doc.cursor.pos.line);
+    try std.testing.expectEqual(@as(usize, 1), doc.cursor.pos.col);
+    try doc.moveRight();
+    try std.testing.expectEqual(@as(usize, 1), doc.cursor.byte);
+    try std.testing.expectEqual(@as(usize, 0), doc.cursor.pos.line);
+    try std.testing.expectEqual(@as(usize, 1), doc.cursor.pos.col);
 }
 
 test "moveRight at EOL with trailing newline enters next line start" {
