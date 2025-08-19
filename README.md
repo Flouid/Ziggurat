@@ -5,7 +5,7 @@ The name isn't that meaningful, just a play on zig and the idea of building func
 
 ## Layer 1: Text Buffer
 
-This is more or less complete. In release mode, it will perform 100,000 mixed random operations of varying lengths on large files in ~15-20ms. It can materialize full documents in the 10MB range in 5ms. It's highly portable, with no dependencies other than zig itself. You could deploy this on a microcontroller, though I probably wouldn't recommend it since it relies heavily on the heap. 
+This is more or less complete. In release mode, it will perform 100,000 mixed random operations of varying lengths on large files in ~15-20ms. It can materialize full documents in the 10MB range in 5ms. It's highly portable, with no dependencies other than zig itself.
 
 ### Limitations
 
@@ -19,12 +19,31 @@ This is more or less complete. In release mode, it will perform 100,000 mixed ra
 4. Generic writer interface for any view or the entire document. 
 5. Standalone: If you don't care about line/column abstractions use this on it's own.
 
+## Layer 2: Document and Cursor
+
+A v0 implementation is now complete, pending probably many changes.
+
+### Limitations
+
+In this early iteration, many.
+
+1. No highlighting/selection
+2. No CRLF normalization
+3. No grapheme support
+4. No text wrapping
+
+### Features
+
+1. Maintains a logical cursor that saves preferred column when traversing short lines
+2. Fairly complete API for performing edits and traversals centered on the cursor
+3. Line/column awareness, exposes logical document positions
+
 ## Testing Harness and Fixture Generation
 
 The build script will output an executable CLI called `test-engine`. Running this with no args will produce some example usage to help get you started. This tool has two uses:
 
 1. Generating test fixtures.
-2. Benchmarking the text engine. 
+2. Benchmarking the text buffer. 
 
 These functions are accessed via different sets of CLI arguments, and there's a shortcut for running all existing test fixtures as benchmarks in succession. Very handy for profiling different workloads. 
 
