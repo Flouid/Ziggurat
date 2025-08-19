@@ -675,7 +675,7 @@ pub const TextBuffer = struct {
                     }
                     debug.dassert(i < pieces.len, "failed to find line");
                     // add newlines inside the piece up to our offset
-                    lines_before += self.countLinesInPieceRange(&pieces[i], 0, offset - acc);
+                    lines_before += try self.countLinesInPieceRange(&pieces[i], 0, offset - acc);
                     return lines_before;
                 },
                 .internal => |*children| {

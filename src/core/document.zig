@@ -226,12 +226,10 @@ test "moveRight at EOL without trailing newline clamps at EOF" {
     const alloc = std.testing.allocator;
     var doc = try Document.init(alloc, "abc");
     defer doc.deinit();
-    // Start at (0,0). Move to end of line 0.
     try doc.moveEnd();
     try std.testing.expectEqual(@as(usize, 3), doc.cursor.byte);
     try std.testing.expectEqual(@as(usize, 0), doc.cursor.pos.line);
     try std.testing.expectEqual(@as(usize, 3), doc.cursor.pos.col);
-    // Moving right at EOF should be a no-op
     try doc.moveRight();
     try std.testing.expectEqual(@as(usize, 3), doc.cursor.byte);
     try std.testing.expectEqual(@as(usize, 0), doc.cursor.pos.line);
@@ -242,43 +240,49 @@ test "moveRight at EOL with trailing newline enters next line start" {
     const alloc = std.testing.allocator;
     var doc = try Document.init(alloc, "ab\nc");
     defer doc.deinit();
-    // Move to end of line 0 (just before '\n')
     try doc.moveEnd();
     try std.testing.expectEqual(@as(usize, 2), doc.cursor.byte);
     try std.testing.expectEqual(@as(usize, 0), doc.cursor.pos.line);
     try std.testing.expectEqual(@as(usize, 2), doc.cursor.pos.col);
-    // Now step right: should land at start of next line
     try doc.moveRight();
-    try std.testing.expectEqual(@as(usize, 3), doc.cursor.byte); // after '\n'
+    try std.testing.expectEqual(@as(usize, 3), doc.cursor.byte);
     try std.testing.expectEqual(@as(usize, 1), doc.cursor.pos.line);
     try std.testing.expectEqual(@as(usize, 0), doc.cursor.pos.col);
 }
 
+test "moveLeft at SOL moves to end of previous col" {
+    const alloc = std.testing.allocator;
+    var doc = try Document.init(alloc, "ab\nc");
+    defer doc.deinit();
+    try doc.moveDown();
+    try std.testing.expectEqual(@as(usize, 3), doc.cursor.byte);
+    try std.testing.expectEqual(@as(usize, 1), doc.cursor.pos.line);
+    try std.testing.expectEqual(@as(usize, 0), doc.cursor.pos.col);
+    try doc.moveLeft();
+    try std.testing.expectEqual(@as(usize, 2), doc.cursor.byte);
+    try std.testing.expectEqual(@as(usize, 0), doc.cursor.pos.line);
+    try std.testing.expectEqual(@as(usize, 2), doc.cursor.pos.col);
+}
+
 test "vertical movement preserves preferred_col across shorter lines" {
     const alloc = std.testing.allocator;
-    // line0: 6, line1: 2, line2: 5
     var doc = try Document.init(alloc, "abcdef\nxy\npqrst");
     defer doc.deinit();
-    // Move to (line 0, col 5)
     try doc.moveTo(.{ .line = 0, .col = 5 });
     try std.testing.expectEqual(@as(usize, 5), doc.cursor.pos.col);
     try std.testing.expectEqual(doc.cursor.pos.col, doc.cursor.preferred_col);
-    // Down to shorter line1 → col clamps to 2, preferred_col stays 5
     try doc.moveDown();
     try std.testing.expectEqual(@as(usize, 1), doc.cursor.pos.line);
     try std.testing.expectEqual(@as(usize, 2), doc.cursor.pos.col);
     try std.testing.expectEqual(@as(usize, 5), doc.cursor.preferred_col);
-    // Down to longer line2 → we should return to preferred_col 5
     try doc.moveDown();
     try std.testing.expectEqual(@as(usize, 2), doc.cursor.pos.line);
     try std.testing.expectEqual(@as(usize, 5), doc.cursor.pos.col);
     try std.testing.expectEqual(@as(usize, 5), doc.cursor.preferred_col);
-    // Up back to shorter line1 → col clamps to 2, preferred_col still 5
     try doc.moveUp();
     try std.testing.expectEqual(@as(usize, 1), doc.cursor.pos.line);
     try std.testing.expectEqual(@as(usize, 2), doc.cursor.pos.col);
     try std.testing.expectEqual(@as(usize, 5), doc.cursor.preferred_col);
-    // Up back to line0 → restore to col 5
     try doc.moveUp();
     try std.testing.expectEqual(@as(usize, 0), doc.cursor.pos.line);
     try std.testing.expectEqual(@as(usize, 5), doc.cursor.pos.col);
@@ -288,16 +292,13 @@ test "cursorBackspace across newline updates line/col correctly" {
     const alloc = std.testing.allocator;
     var doc = try Document.init(alloc, "ab\nc");
     defer doc.deinit();
-    // Move to end of doc (line 1, after 'c')
-    try doc.moveDown(); // line 1, col 0
-    try doc.moveEnd();  // end of line 1 (col 1)
+    try doc.moveDown();
+    try doc.moveEnd();
     try std.testing.expectEqual(@as(usize, 1), doc.cursor.pos.line);
     try std.testing.expectEqual(@as(usize, 1), doc.cursor.pos.col);
-    // Backspace 'c' (no newline crossed)
     try doc.cursorBackspace(1);
     try std.testing.expectEqual(@as(usize, 1), doc.cursor.pos.line);
     try std.testing.expectEqual(@as(usize, 0), doc.cursor.pos.col);
-    // Backspace '\n' (cross a newline)
     try doc.cursorBackspace(1);
     try std.testing.expectEqual(@as(usize, 0), doc.cursor.pos.line);
     try std.testing.expectEqual(@as(usize, 2), doc.cursor.pos.col); // end of "ab"
@@ -320,7 +321,6 @@ test "cursorInsert updates line/col and preferred_col" {
 
 test "materializeLines returns exact byte range for middle line" {
     const alloc = std.testing.allocator;
-    // trailing newline on every line
     const src = "aaa\nbbb\nccc\n";
     var doc = try Document.init(alloc, src);
     defer doc.deinit();
