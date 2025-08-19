@@ -235,6 +235,7 @@ fn locateInLeaf(leaf: *const Node, offset: usize) InLeaf {
         if (offset < acc + piece.len()) return .{ .piece_idx = idx, .offset = offset - acc };
         acc += piece.len();
     }
+    if (offset == acc) return .{ .piece_idx = len, .offset = 0 };
     @panic("couldn't find offset in leaf");
 }
 
@@ -356,7 +357,7 @@ fn spliceIntoLeaf(pieces: *std.ArrayList(Piece), loc: InLeaf, add_off: usize, ad
         return loc.piece_idx + @intFromBool(loc.offset != 0);
     } else {
         try pieces.append(new_piece);
-        return len - 1;
+        return len;
     }
 }
 
@@ -708,7 +709,7 @@ pub const TextBuffer = struct {
                     while (i < pieces.len and remaining > 0) : (i += 1) {
                         const piece = &pieces[i];
                         const lines_in_piece = try self.countLinesInPiece(piece);
-                        if (remaining < lines_in_piece) {
+                        if (remaining <= lines_in_piece) {
                             return offset + acc + self.findNthNewlineInPiece(piece, remaining) + 1;
                         } else {
                             remaining -= lines_in_piece;
