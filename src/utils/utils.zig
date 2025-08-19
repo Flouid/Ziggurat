@@ -2,7 +2,9 @@ const std = @import("std");
 const debug = @import("debug");
 
 // A semirandom collection of functions which really should be in the standard library but for some reason aren't
-// the majority of this IS in the 0.14 STL, but is now missing for one reason or another
+// the majority of this IS in the 0.14 STL, but is now missing for one reason or another.
+
+// Also contains some utility helpers which could have use in multiple modules
 
 // -------------------- ARRAY LISTS --------------------
 
@@ -62,6 +64,7 @@ pub fn bytesToHexAlloc(alloc: std.mem.Allocator, bytes: []const u8) ![]u8 {
 pub const RNG = struct {
     // wrapper for a specific pseudo-random number generator that provides results in a range.
     // Also generic for any unsigned integer type (as long as it's not bigger than u64).
+    // NOTE: this might break on 32bit targets...
     rng: std.Random.SplitMix64,
 
     pub fn init(seed: u64) RNG {
@@ -83,4 +86,12 @@ pub fn printf(comptime fmt: []const u8, args: anytype) !void {
     var buf: [1024]u8 = undefined;
     const s = try std.fmt.bufPrint(&buf, fmt, args);
     try std.fs.File.stdout().writeAll(s);
+}
+
+// -------------------- GENERIC HELPERS --------------------
+
+pub inline fn countNewlinesInSlice(slice: []const u8) usize {
+    var count: usize = 0;
+    for (slice) |c| { if (c == '\n') count += 1; }
+    return count;
 }
