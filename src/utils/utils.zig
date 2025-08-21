@@ -8,7 +8,7 @@ const debug = @import("debug");
 
 // -------------------- ARRAY LISTS --------------------
 
-pub inline fn orderedRemoveRange(comptime T: type, list: *std.ArrayList(T), start: usize, count: usize) void {
+pub fn orderedRemoveRange(comptime T: type, list: *std.ArrayList(T), start: usize, count: usize) void {
     // for some strange reason the arraylist stl does not have this function.
     // Repeatedly calling .removedOrdered would be slow, this does the same more performantly.
     debug.dassert(start <= list.items.len, "start is out of bounds");
@@ -90,7 +90,7 @@ pub fn printf(comptime fmt: []const u8, args: anytype) !void {
 
 // -------------------- GENERIC HELPERS --------------------
 
-pub inline fn countNewlinesInSlice(slice: []const u8) usize {
+pub fn countNewlinesInSlice(slice: []const u8) usize {
     var count: usize = 0;
     for (slice) |c| { if (c == '\n') count += 1; }
     return count;

@@ -225,7 +225,7 @@ fn writeFixtureToPath(alloc: std.mem.Allocator, path: []const u8, fixture: *cons
     try utils.printf("Wrote fixture to output file in {d} ms\n", .{write_ns / 1_000_000});
 }
 
-inline fn trimCR(s: []const u8) []const u8 {
+fn trimCR(s: []const u8) []const u8 {
     // in case there are also carriage returns seperating files
     return if (s.len > 0 and s[s.len - 1] == '\r') s[0 .. s.len - 1] else s;
 }

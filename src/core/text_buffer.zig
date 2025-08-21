@@ -37,37 +37,37 @@ const Piece = struct {
     const hi_bit = @as(usize, 1) << (@bitSizeOf(usize) - 1);
     const len_mask = ~hi_bit;
 
-    inline fn len(self: Piece) usize {
+    fn len(self: Piece) usize {
         return self.len_and_buf & len_mask;
     }
 
-    inline fn buf(self: Piece) Buffer {
+    fn buf(self: Piece) Buffer {
         return if ((self.len_and_buf & hi_bit) == 0) .Original else .Add;
     }
 
-    inline fn compose(length: usize, buffer: Buffer) usize {
+    fn compose(length: usize, buffer: Buffer) usize {
         const flag: usize = if (buffer == .Add) hi_bit else 0;
         return (length & len_mask) | flag;
     }
 
-    inline fn setLen(self: *Piece, new_len: usize) void {
+    fn setLen(self: *Piece, new_len: usize) void {
         self.len_and_buf = compose(new_len, self.buf());
     }
 
-    inline fn setBuf(self: *Piece, new_buf: Buffer) void {
+    fn setBuf(self: *Piece, new_buf: Buffer) void {
         const len_only = self.len_and_buf & len_mask;
         self.len_and_buf = compose(len_only, new_buf);
     }
 
-    inline fn growBy(self: *Piece, delta: usize) void {
+    fn growBy(self: *Piece, delta: usize) void {
         self.len_and_buf = compose(self.len() + delta, self.buf());
     }
 
-    inline fn shrinkBy(self: *Piece, delta: usize) void {
+    fn shrinkBy(self: *Piece, delta: usize) void {
         self.len_and_buf = compose(self.len() - delta, self.buf());
     }
 
-    inline fn init(buffer: Buffer, length: usize, offset: usize) Piece {
+    fn init(buffer: Buffer, length: usize, offset: usize) Piece {
         debug.dassert((length & hi_bit) == 0, "file size must be at most half of your system's virtual address space");
         const flag: usize = if (buffer == .Add) hi_bit else 0;
         return .{ .off = offset, .len_and_buf = length | flag };
@@ -136,48 +136,48 @@ fn freeNode(alloc: std.mem.Allocator, node: *Node) void {
     alloc.destroy(node);
 }
 
-// inline helper methods, good for debugging and provide readable aliases
+// helper methods, good for debugging and provide readable aliases
 
-inline fn leafPieces(leaf: *Node) *std.ArrayList(Piece) {
-    debug.dassert(std.meta.activeTag(leaf.children) == .leaf, "expected leaf node");
+fn leafPieces(leaf: *Node) *std.ArrayList(Piece) {
+    debug.dassert(leaf.children == .leaf, "expected leaf node");
     return &leaf.children.leaf;
 }
 
-inline fn leafPiecesConst(leaf: *const Node) *const std.ArrayList(Piece) {
-    debug.dassert(std.meta.activeTag(leaf.children) == .leaf, "expected leaf node");
+fn leafPiecesConst(leaf: *const Node) *const std.ArrayList(Piece) {
+    debug.dassert(leaf.children == .leaf, "expected leaf node");
     return &leaf.children.leaf;
 }
 
-inline fn childList(internal: *Node) *std.ArrayList(*Node) {
-    debug.dassert(std.meta.activeTag(internal.children) == .internal, "expected internal node");
+fn childList(internal: *Node) *std.ArrayList(*Node) {
+    debug.dassert(internal.children == .internal, "expected internal node");
     return &internal.children.internal;
 }
 
-inline fn childListConst(internal: *const Node) *const std.ArrayList(*Node) {
-    debug.dassert(std.meta.activeTag(internal.children) == .internal, "expected internal node");
+fn childListConst(internal: *const Node) *const std.ArrayList(*Node) {
+    debug.dassert(internal.children == .internal, "expected internal node");
     return &internal.children.internal;
 }
 
-inline fn isLeaf(node: *const Node) bool {
-    return std.meta.activeTag(node.children) == .leaf;
+fn isLeaf(node: *const Node) bool {
+    return node.children == .leaf;
 }
 
-inline fn nodeCount(node: *const Node) usize {
+fn nodeCount(node: *const Node) usize {
     return switch (node.children) {
         .leaf => |*pieces| pieces.items.len,
         .internal => |*children| children.items.len,
     };
 }
 
-inline fn nodeMin(node: *const Node) usize {
+fn nodeMin(node: *const Node) usize {
     return if (isLeaf(node)) MIN_PIECES else MIN_BRANCH;
 }
 
-inline fn nodeMax(node: *const Node) usize {
+fn nodeMax(node: *const Node) usize {
     return if (isLeaf(node)) MAX_PIECES else MAX_BRANCH;
 }
 
-inline fn spareNodes(node: *Node) usize {
+fn spareNodes(node: *Node) usize {
     const count = nodeCount(node);
     const min = nodeMin(node);
     return if (count > min) count - min else 0;
