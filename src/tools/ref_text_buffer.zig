@@ -30,23 +30,24 @@ pub const TextBuffer = struct {
     // current implementation maintains and uses a prefix sum and searches it in O(log n) time.
     // However, since the pieces are stored in array, insertions and deletions are O(n).
     original: []const u8,
-    add: std.ArrayList(u8),
-    pieces: std.ArrayList(Piece),
-    prefix: std.ArrayList(usize),
+    add: std.ArrayList(u8) = .empty,
+    pieces: std.ArrayList(Piece) = .empty,
+    prefix: std.ArrayList(usize) = .empty,
     doc_len: usize,
+    alloc: std.mem.Allocator,
 
     pub fn init(alloc: std.mem.Allocator, original: []const u8) error{OutOfMemory}!TextBuffer {
-        var table = TextBuffer{ .original = original, .add = std.ArrayList(u8).init(alloc), .pieces = std.ArrayList(Piece).init(alloc), .prefix = std.ArrayList(usize).init(alloc), .doc_len = original.len };
+        var table = TextBuffer{ .original = original, .doc_len = original.len, .alloc = alloc};
         if (original.len == 0) return table; // empty document, no pieces
-        try table.pieces.append(.{ .buf = .Original, .off = 0, .len = original.len });
-        try table.prefix.append(0);
+        try table.pieces.append(alloc, .{ .buf = .Original, .off = 0, .len = original.len });
+        try table.prefix.append(alloc, 0);
         return table;
     }
 
     pub fn deinit(self: *TextBuffer) void {
-        self.add.deinit();
-        self.pieces.deinit();
-        self.prefix.deinit();
+        self.add.deinit(self.alloc);
+        self.pieces.deinit(self.alloc);
+        self.prefix.deinit(self.alloc);
     }
 
     pub fn insert(self: *TextBuffer, at: usize, text: []const u8) error{OutOfMemory}!void {
@@ -54,11 +55,11 @@ pub const TextBuffer = struct {
         debug.dassert(text.len > 0, "cannot insert empty text");
         // invariants, these are needed regardless of case
         const add_offset = self.add.items.len;
-        try self.add.appendSlice(text);
+        try self.add.appendSlice(self.alloc, text);
         // case for empty doc
         if (self.pieces.items.len == 0) {
-            try self.pieces.append(.{ .buf = .Add, .off = 0, .len = text.len });
-            try self.prefix.append(0);
+            try self.pieces.append(self.alloc, .{ .buf = .Add, .off = 0, .len = text.len });
+            try self.prefix.append(self.alloc, 0);
             self.doc_len += text.len;
             return;
         }
@@ -93,7 +94,7 @@ pub const TextBuffer = struct {
         n += 1;
         if (posfix.len != 0) { buf[n] = posfix; n += 1; }
         self.pieces.items[idx] = buf[0];
-        if (n >= 2) try self.pieces.insertSlice(idx + 1, buf[1..n]);
+        if (n >= 2) try self.pieces.insertSlice(self.alloc, idx + 1, buf[1..n]);
         self.doc_len += text.len;
         // see if there are any pieces than can be merged, then rebuild the prefix
         idx = self.mergeAround(idx);
@@ -121,7 +122,7 @@ pub const TextBuffer = struct {
             else {
                 old.len = len_prefix;
                 const posfix = Piece{ .buf = old.buf, .off = old.off + len_prefix + count, .len = len_posfix };
-                try self.pieces.insert(idx + 1, posfix);
+                try self.pieces.insert(self.alloc, idx + 1, posfix);
             }
         }
         // case 2: deletion spans multiple pieces
@@ -195,7 +196,7 @@ pub const TextBuffer = struct {
     fn rebuildPrefix(self: *TextBuffer, from: usize) error{OutOfMemory}!void {
         // inserting in the middle of the piece table invalidates the prefix array AFTER the insertion point.
         // starting from the insertion point, rebuild the prefix array.
-        try self.prefix.resize(self.pieces.items.len);
+        try self.prefix.resize(self.alloc, self.pieces.items.len);
         if (self.pieces.items.len == 0) return;
         if (from == 0) self.prefix.items[0] = 0;
         var i: usize = if (from == 0) 1 else from;

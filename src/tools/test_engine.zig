@@ -84,16 +84,16 @@ fn replayWithEngine(comptime Engine: type, alloc: std.mem.Allocator, init_text: 
     try utils.printf("Completed in {d} ms\n", .{run_ns / 1_000_000});
 
     // deinit is handled when returning an owned slice
-    var out_buf = std.ArrayList(u8).init(alloc);
+    var out_buf: std.ArrayList(u8) = .empty;
     // making the output buffer big enough to hold the input text is probably a safe assumption
-    try out_buf.ensureTotalCapacity(init_text.len);
+    try out_buf.ensureTotalCapacity(alloc, init_text.len);
 
     timer.reset();
-    try editor.materialize(out_buf.writer());
+    try editor.materialize(out_buf.writer(alloc));
     const write_ns = timer.read();
     try utils.printf("Editor materialized {d} bytes in {d} ms\n", .{ out_buf.items.len, write_ns / 1_000_000 });
 
-    return try out_buf.toOwnedSlice();
+    return try out_buf.toOwnedSlice(alloc);
 }
 
 // -------------------- TEST FIXTURE GENERATOR IMPLEMENTATION --------------------
@@ -145,10 +145,10 @@ fn generateText(a: std.mem.Allocator, rng: *utils.RNG, loc: Location) ![]u8 {
 fn generateOps(a: std.mem.Allocator, rng: *utils.RNG, cfg: GenConfig, init_doc_len: usize) !std.ArrayList(TextOp) {
     debug.dassert(cfg.p_insert <= 100, "p_insert must be an integer from 0 to 100");
     debug.dassert(cfg.p_long <= 100, "p_long must be an integer from 100");
-    var out = std.ArrayList(TextOp).init(a);
+    var out: std.ArrayList(TextOp) = .empty;
     errdefer {
         for (out.items) |op| if (op.op == .I) a.free(op.text);
-        out.deinit();
+        out.deinit(a);
     }
     var exp_doc_len = init_doc_len;
     var timer = try std.time.Timer.start();
@@ -164,11 +164,11 @@ fn generateOps(a: std.mem.Allocator, rng: *utils.RNG, cfg: GenConfig, init_doc_l
         switch (op_type) {
             .I => {
                 const text = try generateText(a, rng, loc);
-                try out.append(TextOp.initInsert(loc, text));
+                try out.append(a, TextOp.initInsert(loc, text));
                 exp_doc_len += loc.len;
             },
             .D => {
-                try out.append(TextOp.initDelete(loc));
+                try out.append(a, TextOp.initDelete(loc));
                 exp_doc_len -= loc.len;
             },
         }
@@ -189,7 +189,7 @@ fn generateFixture(alloc: std.mem.Allocator, cfg: GenConfig, init_text: []const 
     fixture.init_text = try a.dupe(u8, init_text);
     var rng = utils.RNG.init(cfg.seed);
     var ops = try generateOps(a, &rng, cfg, init_text.len);
-    fixture.ops = try ops.toOwnedSlice();
+    fixture.ops = try ops.toOwnedSlice(a);
 
     fixture.final_text = try replayWithEngine(RefEngine, a, fixture.init_text, fixture.ops);
 
@@ -297,8 +297,8 @@ pub fn parseFixtureFromPath(parent_alloc: std.mem.Allocator, path: []const u8) !
     fixture.init_text = try utils.hexToBytesAlloc(a, l2);
 
     // -- lines 3..: exactly n_ops ops
-    var ops_buf = std.ArrayList(TextOp).init(a);
-    errdefer ops_buf.deinit();
+    var ops_buf: std.ArrayList(TextOp) = .empty;
+    errdefer ops_buf.deinit(a);
 
     var read_ops: usize = 0;
     while (read_ops < n_ops) {
@@ -311,10 +311,10 @@ pub fn parseFixtureFromPath(parent_alloc: std.mem.Allocator, path: []const u8) !
             'D' => try parseDeleteLine(line),
             else => return error.UnknownLine,
         };
-        try ops_buf.append(op);
+        try ops_buf.append(a, op);
         read_ops += 1;
     }
-    fixture.ops = try ops_buf.toOwnedSlice();
+    fixture.ops = try ops_buf.toOwnedSlice(a);
 
     // -- last: final hex
     const final_raw = it.next() orelse return error.MissingFinal;
