@@ -3,39 +3,28 @@ const debug = @import("debug");
 const utils = @import("utils");
 const TextBuffer = @import("buffer").TextBuffer;
 const SliceIter = @import("buffer").SliceIter;
+const TextPos = @import("types").TextPos;
+const Span = @import("types").Span;
 
 // The logical document layer.
 // The text buffer sits below and operates purely in terms of bytes.
 // The document adds abstraction and operates in terms of lines, columns, and characters.
 
-pub const Pos = struct {
-    // a logical position in the document
-    line: usize,
-    col: usize,
-};
-
-pub const Span = struct {
-    // an exclusive span [start, end) for use within a line + a newline excluding length
-    start: usize,
-    end: usize,
-    len: usize,
-};
-
-pub const Cursor = struct {
-    // the logical cursor inside the document
+pub const Caret = struct {
+    // the logical caret inside the document
     byte: usize,
-    pos: Pos,
+    pos: TextPos,
     preferred_col: usize,
 };
 
 pub const Document = struct {
     buffer: TextBuffer,
-    cursor: Cursor,
+    caret: Caret,
 
     pub fn init(alloc: std.mem.Allocator, original: []const u8) error{ OutOfMemory, FileTooBig }!Document {
         return .{ 
             .buffer = try TextBuffer.init(alloc, original),
-            .cursor = .{ .byte = 0, .pos = .{ .line = 0, .col = 0 }, .preferred_col = 0, }
+            .caret = .{ .byte = 0, .pos = .{ .line = 0, .col = 0 }, .preferred_col = 0, }
         };
     }
 
@@ -45,17 +34,17 @@ pub const Document = struct {
 
     // pass-through length helpers
 
-    pub fn size(self: *Document) usize { return self.buffer.doc_len; }
-    pub fn lineCount(self: *Document) usize { return self.buffer.root.weight_lines + 1; }
+    pub fn size(self: *const Document) usize { return self.buffer.doc_len; }
+    pub fn lineCount(self: *const Document) usize { return self.buffer.root.weight_lines + 1; }
 
     // editing around the cursor
 
-    pub fn cursorInsert(self: *Document, text: []const u8) error{OutOfMemory}!void {
+    pub fn caretInsert(self: *Document, text: []const u8) error{OutOfMemory}!void {
         debug.dassert(text.len > 0, "cannot insert empty text at cursor");
         // update the text buffer
-        try self.buffer.insert(self.cursor.byte, text);
+        try self.buffer.insert(self.caret.byte, text);
         // update the cursor cheaply
-        const c = &self.cursor;
+        const c = &self.caret;
         const newlines = utils.countNewlinesInSlice(text);
         if (newlines == 0) { c.pos.col += text.len; }
         else {
@@ -69,9 +58,9 @@ pub const Document = struct {
         c.preferred_col = c.pos.col;
     }
 
-    pub fn cursorBackspace(self: *Document, n: usize) error{OutOfMemory}!void {
+    pub fn caretBackspace(self: *Document, n: usize) error{OutOfMemory}!void {
         debug.dassert(n > 0, "cannot delete nothing at cursor");
-        const c = &self.cursor;
+        const c = &self.caret;
         // if the cursor is at the start of the document, silently do nothing
         if (c.byte == 0) return;
         const take = @min(n, c.byte);
@@ -95,15 +84,15 @@ pub const Document = struct {
 
     // cursor traversal
 
-    pub fn moveTo(self: *Document, pos: Pos) error{OutOfMemory}!void {
-        const c = &self.cursor;
+    pub fn moveTo(self: *Document, pos: TextPos) error{OutOfMemory}!void {
+        const c = &self.caret;
         c.byte = try self.posToByte(pos);
         c.pos = pos;
         c.preferred_col = c.pos.col;
     }
 
     pub fn moveLeft(self: *Document) error{OutOfMemory}!void {
-        const c = &self.cursor;
+        const c = &self.caret;
         if (c.byte == 0) return;
         c.byte -= 1;
         if (c.pos.col > 0) { c.pos.col -= 1; }
@@ -112,7 +101,7 @@ pub const Document = struct {
     }
 
     pub fn moveRight(self: *Document) error{OutOfMemory}!void {
-        const c = &self.cursor;
+        const c = &self.caret;
         if (c.byte >= self.size()) return;
         const line_end = try self.lineEnd(c.pos.line);
         // move to next line, account for EOF special case
@@ -126,14 +115,14 @@ pub const Document = struct {
     }
 
     pub fn moveHome(self: *Document) error{OutOfMemory}!void {
-        const c = &self.cursor;
+        const c = &self.caret;
         c.byte = try self.lineStart(c.pos.line);
         c.pos.col = 0;
         c.preferred_col = 0;
     }
 
     pub fn moveEnd(self: *Document) error{OutOfMemory}!void {
-        const c = &self.cursor;
+        const c = &self.caret;
         const span = try self.lineSpan(c.pos.line);
         c.byte = span.start + span.len;
         c.pos.col = span.len;
@@ -141,7 +130,7 @@ pub const Document = struct {
     }
 
     pub fn moveUp(self: *Document) error{OutOfMemory}!void {
-        const c = &self.cursor;
+        const c = &self.caret;
         if (c.pos.line == 0) { try self.moveHome(); return; }
         c.pos.line -= 1;
         const span = try self.lineSpan(c.pos.line);
@@ -150,7 +139,7 @@ pub const Document = struct {
     }
 
     pub fn moveDown(self: *Document) error{OutOfMemory}!void {
-        const c = &self.cursor;
+        const c = &self.caret;
         if (c.pos.line + 1 >= self.lineCount()) { try self.moveEnd(); return; }
         c.pos.line += 1;
         const span = try self.lineSpan(c.pos.line);
@@ -158,29 +147,26 @@ pub const Document = struct {
         c.byte = span.start + c.pos.col;
     }
 
-    // materialization and iteration over lines
+    // materialization and span generation
 
-    pub fn iterLines(self: *Document, first: usize, last: usize) error{OutOfMemory}!SliceIter {
-        debug.dassert(first <= last, "cannot iterate over a negative range");
-        debug.dassert(last < self.lineCount(), "last line outside of document");
-        const first_byte = try self.lineStart(first);
-        const last_byte = try self.lineEnd(last);
-        debug.dassert(first_byte <= last_byte, "line bytes cannot have negative range");
-        return self.buffer.getSliceIter(first_byte, last_byte - first_byte);
-    }
-
-    pub fn materializeLines(self: *Document, w: anytype, first: usize, last: usize) !void {
-        debug.dassert(first <= last, "cannot materialize a negative range");
-        debug.dassert(last < self.lineCount(), "last line outside of document");
-        const first_byte = try self.lineStart(first);
-        const last_byte = try self.lineEnd(last);
-        debug.dassert(first_byte <= last_byte, "line bytes cannot have negative range");
-        try self.buffer.materializeRange(w, first_byte, last_byte - first_byte);
+    pub fn materializeRange(self: *Document, w: anytype, start: usize, len: usize) @TypeOf(w).Error!void {
+        // pass-through method for materializing a range of bytes
+        try self.buffer.materializeRange(w, start, len);
     }
 
     pub fn materialize(self: *Document, w: anytype) @TypeOf(w).Error!void {
         // pass-through method for materializing a full document
         try self.buffer.materialize(w);
+    }
+
+    pub fn lineSpan(self: *Document, line: usize) error{OutOfMemory}!Span {
+        debug.dassert(line < self.lineCount(), "line outside of document");
+        const start = try self.lineStart(line);
+        const end = try self.lineEnd(line);
+        debug.dassert(end >= start, "line cannot have negative length");
+        // subtracts newline for all lines except the last (no newline)
+        const len = if (line + 1 < self.lineCount()) end - start - 1 else end - start;
+        return .{ .start = start, .len = len };
     }
 
     // navigation helpers
@@ -195,17 +181,7 @@ pub const Document = struct {
         return if (line + 1 < self.lineCount()) self.buffer.byteOfLine(line + 1) else self.size();
     }
 
-    fn lineSpan(self: *Document, line: usize) error{OutOfMemory}!Span {
-        debug.dassert(line < self.lineCount(), "line outside of document");
-        const start = try self.lineStart(line);
-        const end = try self.lineEnd(line);
-        debug.dassert(end >= start, "line cannot have negative length");
-        // subtracts newline for all lines except the last (no newline)
-        const len = if (line + 1 < self.lineCount()) end - start - 1 else end - start;
-        return .{ .start = start, .end = end, .len = len };
-    }
-
-    fn byteToPos(self: *Document, at: usize) error{OutOfMemory}!Pos {
+    fn byteToPos(self: *Document, at: usize) error{OutOfMemory}!TextPos {
         debug.dassert(at <= self.size(), "index outside of document");
         // NOTE: this double traversal is technically unneccesary, but would require another big helper
         const line = try self.buffer.lineOfByte(at);
@@ -213,7 +189,7 @@ pub const Document = struct {
         return .{ .line = line, .col = at - start };
     }
 
-    fn posToByte(self: *Document, pos: Pos) error{OutOfMemory}!usize {
+    fn posToByte(self: *Document, pos: TextPos) error{OutOfMemory}!usize {
         debug.dassert(pos.line < self.lineCount(), "line outside of document");
         const span = try self.lineSpan(pos.line);
         debug.dassert(pos.col <= span.len, "column outside of line");
@@ -228,13 +204,13 @@ test "moveRight at EOL without trailing newline clamps at EOF" {
     var doc = try Document.init(alloc, "abc");
     defer doc.deinit();
     try doc.moveEnd();
-    try std.testing.expectEqual(@as(usize, 3), doc.cursor.byte);
-    try std.testing.expectEqual(@as(usize, 0), doc.cursor.pos.line);
-    try std.testing.expectEqual(@as(usize, 3), doc.cursor.pos.col);
+    try std.testing.expectEqual(@as(usize, 3), doc.caret.byte);
+    try std.testing.expectEqual(@as(usize, 0), doc.caret.pos.line);
+    try std.testing.expectEqual(@as(usize, 3), doc.caret.pos.col);
     try doc.moveRight();
-    try std.testing.expectEqual(@as(usize, 3), doc.cursor.byte);
-    try std.testing.expectEqual(@as(usize, 0), doc.cursor.pos.line);
-    try std.testing.expectEqual(@as(usize, 3), doc.cursor.pos.col);
+    try std.testing.expectEqual(@as(usize, 3), doc.caret.byte);
+    try std.testing.expectEqual(@as(usize, 0), doc.caret.pos.line);
+    try std.testing.expectEqual(@as(usize, 3), doc.caret.pos.col);
 }
 
 test "moveRight off EOF clamps" {
@@ -242,13 +218,13 @@ test "moveRight off EOF clamps" {
     var doc = try Document.init(alloc, "a");
     defer doc.deinit();
     try doc.moveRight();
-    try std.testing.expectEqual(@as(usize, 1), doc.cursor.byte);
-    try std.testing.expectEqual(@as(usize, 0), doc.cursor.pos.line);
-    try std.testing.expectEqual(@as(usize, 1), doc.cursor.pos.col);
+    try std.testing.expectEqual(@as(usize, 1), doc.caret.byte);
+    try std.testing.expectEqual(@as(usize, 0), doc.caret.pos.line);
+    try std.testing.expectEqual(@as(usize, 1), doc.caret.pos.col);
     try doc.moveRight();
-    try std.testing.expectEqual(@as(usize, 1), doc.cursor.byte);
-    try std.testing.expectEqual(@as(usize, 0), doc.cursor.pos.line);
-    try std.testing.expectEqual(@as(usize, 1), doc.cursor.pos.col);
+    try std.testing.expectEqual(@as(usize, 1), doc.caret.byte);
+    try std.testing.expectEqual(@as(usize, 0), doc.caret.pos.line);
+    try std.testing.expectEqual(@as(usize, 1), doc.caret.pos.col);
 }
 
 test "moveRight at EOL with trailing newline enters next line start" {
@@ -256,13 +232,13 @@ test "moveRight at EOL with trailing newline enters next line start" {
     var doc = try Document.init(alloc, "ab\nc");
     defer doc.deinit();
     try doc.moveEnd();
-    try std.testing.expectEqual(@as(usize, 2), doc.cursor.byte);
-    try std.testing.expectEqual(@as(usize, 0), doc.cursor.pos.line);
-    try std.testing.expectEqual(@as(usize, 2), doc.cursor.pos.col);
+    try std.testing.expectEqual(@as(usize, 2), doc.caret.byte);
+    try std.testing.expectEqual(@as(usize, 0), doc.caret.pos.line);
+    try std.testing.expectEqual(@as(usize, 2), doc.caret.pos.col);
     try doc.moveRight();
-    try std.testing.expectEqual(@as(usize, 3), doc.cursor.byte);
-    try std.testing.expectEqual(@as(usize, 1), doc.cursor.pos.line);
-    try std.testing.expectEqual(@as(usize, 0), doc.cursor.pos.col);
+    try std.testing.expectEqual(@as(usize, 3), doc.caret.byte);
+    try std.testing.expectEqual(@as(usize, 1), doc.caret.pos.line);
+    try std.testing.expectEqual(@as(usize, 0), doc.caret.pos.col);
 }
 
 test "moveLeft at SOL moves to end of previous col" {
@@ -270,13 +246,13 @@ test "moveLeft at SOL moves to end of previous col" {
     var doc = try Document.init(alloc, "ab\nc");
     defer doc.deinit();
     try doc.moveDown();
-    try std.testing.expectEqual(@as(usize, 3), doc.cursor.byte);
-    try std.testing.expectEqual(@as(usize, 1), doc.cursor.pos.line);
-    try std.testing.expectEqual(@as(usize, 0), doc.cursor.pos.col);
+    try std.testing.expectEqual(@as(usize, 3), doc.caret.byte);
+    try std.testing.expectEqual(@as(usize, 1), doc.caret.pos.line);
+    try std.testing.expectEqual(@as(usize, 0), doc.caret.pos.col);
     try doc.moveLeft();
-    try std.testing.expectEqual(@as(usize, 2), doc.cursor.byte);
-    try std.testing.expectEqual(@as(usize, 0), doc.cursor.pos.line);
-    try std.testing.expectEqual(@as(usize, 2), doc.cursor.pos.col);
+    try std.testing.expectEqual(@as(usize, 2), doc.caret.byte);
+    try std.testing.expectEqual(@as(usize, 0), doc.caret.pos.line);
+    try std.testing.expectEqual(@as(usize, 2), doc.caret.pos.col);
 }
 
 test "vertical movement preserves preferred_col across shorter lines" {
@@ -284,23 +260,23 @@ test "vertical movement preserves preferred_col across shorter lines" {
     var doc = try Document.init(alloc, "abcdef\nxy\npqrst");
     defer doc.deinit();
     try doc.moveTo(.{ .line = 0, .col = 5 });
-    try std.testing.expectEqual(@as(usize, 5), doc.cursor.pos.col);
-    try std.testing.expectEqual(doc.cursor.pos.col, doc.cursor.preferred_col);
+    try std.testing.expectEqual(@as(usize, 5), doc.caret.pos.col);
+    try std.testing.expectEqual(doc.caret.pos.col, doc.caret.preferred_col);
     try doc.moveDown();
-    try std.testing.expectEqual(@as(usize, 1), doc.cursor.pos.line);
-    try std.testing.expectEqual(@as(usize, 2), doc.cursor.pos.col);
-    try std.testing.expectEqual(@as(usize, 5), doc.cursor.preferred_col);
+    try std.testing.expectEqual(@as(usize, 1), doc.caret.pos.line);
+    try std.testing.expectEqual(@as(usize, 2), doc.caret.pos.col);
+    try std.testing.expectEqual(@as(usize, 5), doc.caret.preferred_col);
     try doc.moveDown();
-    try std.testing.expectEqual(@as(usize, 2), doc.cursor.pos.line);
-    try std.testing.expectEqual(@as(usize, 5), doc.cursor.pos.col);
-    try std.testing.expectEqual(@as(usize, 5), doc.cursor.preferred_col);
+    try std.testing.expectEqual(@as(usize, 2), doc.caret.pos.line);
+    try std.testing.expectEqual(@as(usize, 5), doc.caret.pos.col);
+    try std.testing.expectEqual(@as(usize, 5), doc.caret.preferred_col);
     try doc.moveUp();
-    try std.testing.expectEqual(@as(usize, 1), doc.cursor.pos.line);
-    try std.testing.expectEqual(@as(usize, 2), doc.cursor.pos.col);
-    try std.testing.expectEqual(@as(usize, 5), doc.cursor.preferred_col);
+    try std.testing.expectEqual(@as(usize, 1), doc.caret.pos.line);
+    try std.testing.expectEqual(@as(usize, 2), doc.caret.pos.col);
+    try std.testing.expectEqual(@as(usize, 5), doc.caret.preferred_col);
     try doc.moveUp();
-    try std.testing.expectEqual(@as(usize, 0), doc.cursor.pos.line);
-    try std.testing.expectEqual(@as(usize, 5), doc.cursor.pos.col);
+    try std.testing.expectEqual(@as(usize, 0), doc.caret.pos.line);
+    try std.testing.expectEqual(@as(usize, 5), doc.caret.pos.col);
 }
 
 test "cursorBackspace across newline updates line/col correctly" {
@@ -309,15 +285,15 @@ test "cursorBackspace across newline updates line/col correctly" {
     defer doc.deinit();
     try doc.moveDown();
     try doc.moveEnd();
-    try std.testing.expectEqual(@as(usize, 1), doc.cursor.pos.line);
-    try std.testing.expectEqual(@as(usize, 1), doc.cursor.pos.col);
-    try doc.cursorBackspace(1);
-    try std.testing.expectEqual(@as(usize, 1), doc.cursor.pos.line);
-    try std.testing.expectEqual(@as(usize, 0), doc.cursor.pos.col);
-    try doc.cursorBackspace(1);
-    try std.testing.expectEqual(@as(usize, 0), doc.cursor.pos.line);
-    try std.testing.expectEqual(@as(usize, 2), doc.cursor.pos.col); // end of "ab"
-    try std.testing.expectEqual(@as(usize, 2), doc.cursor.byte);
+    try std.testing.expectEqual(@as(usize, 1), doc.caret.pos.line);
+    try std.testing.expectEqual(@as(usize, 1), doc.caret.pos.col);
+    try doc.caretBackspace(1);
+    try std.testing.expectEqual(@as(usize, 1), doc.caret.pos.line);
+    try std.testing.expectEqual(@as(usize, 0), doc.caret.pos.col);
+    try doc.caretBackspace(1);
+    try std.testing.expectEqual(@as(usize, 0), doc.caret.pos.line);
+    try std.testing.expectEqual(@as(usize, 2), doc.caret.pos.col); // end of "ab"
+    try std.testing.expectEqual(@as(usize, 2), doc.caret.byte);
 }
 
 test "empty lines handled correctly" {
@@ -325,52 +301,41 @@ test "empty lines handled correctly" {
     var doc = try Document.init(alloc, "\n\n\n");
     defer doc.deinit();
     try doc.moveDown();
-    try std.testing.expectEqual(@as(usize, 1), doc.cursor.byte);
-    try std.testing.expectEqual(@as(usize, 1), doc.cursor.pos.line);
-    try std.testing.expectEqual(@as(usize, 0), doc.cursor.pos.col);
+    try std.testing.expectEqual(@as(usize, 1), doc.caret.byte);
+    try std.testing.expectEqual(@as(usize, 1), doc.caret.pos.line);
+    try std.testing.expectEqual(@as(usize, 0), doc.caret.pos.col);
     try doc.moveRight();
-    try std.testing.expectEqual(@as(usize, 2), doc.cursor.byte);
-    try std.testing.expectEqual(@as(usize, 2), doc.cursor.pos.line);
-    try std.testing.expectEqual(@as(usize, 0), doc.cursor.pos.col);
-    try doc.cursorInsert("\n");
-    try std.testing.expectEqual(@as(usize, 3), doc.cursor.byte);
-    try std.testing.expectEqual(@as(usize, 3), doc.cursor.pos.line);
-    try std.testing.expectEqual(@as(usize, 0), doc.cursor.pos.col);
-    try doc.cursorBackspace(1);
-    try std.testing.expectEqual(@as(usize, 2), doc.cursor.byte);
-    try std.testing.expectEqual(@as(usize, 2), doc.cursor.pos.line);
-    try std.testing.expectEqual(@as(usize, 0), doc.cursor.pos.col);
+    try std.testing.expectEqual(@as(usize, 2), doc.caret.byte);
+    try std.testing.expectEqual(@as(usize, 2), doc.caret.pos.line);
+    try std.testing.expectEqual(@as(usize, 0), doc.caret.pos.col);
+    try doc.caretInsert("\n");
+    try std.testing.expectEqual(@as(usize, 3), doc.caret.byte);
+    try std.testing.expectEqual(@as(usize, 3), doc.caret.pos.line);
+    try std.testing.expectEqual(@as(usize, 0), doc.caret.pos.col);
+    try doc.caretBackspace(1);
+    try std.testing.expectEqual(@as(usize, 2), doc.caret.byte);
+    try std.testing.expectEqual(@as(usize, 2), doc.caret.pos.line);
+    try std.testing.expectEqual(@as(usize, 0), doc.caret.pos.col);
     try doc.moveLeft();
-    try std.testing.expectEqual(@as(usize, 1), doc.cursor.byte);
-    try std.testing.expectEqual(@as(usize, 1), doc.cursor.pos.line);
-    try std.testing.expectEqual(@as(usize, 0), doc.cursor.pos.col);
+    try std.testing.expectEqual(@as(usize, 1), doc.caret.byte);
+    try std.testing.expectEqual(@as(usize, 1), doc.caret.pos.line);
+    try std.testing.expectEqual(@as(usize, 0), doc.caret.pos.col);
     try doc.moveUp();
-    try std.testing.expectEqual(@as(usize, 0), doc.cursor.byte);
-    try std.testing.expectEqual(@as(usize, 0), doc.cursor.pos.line);
-    try std.testing.expectEqual(@as(usize, 0), doc.cursor.pos.col);
+    try std.testing.expectEqual(@as(usize, 0), doc.caret.byte);
+    try std.testing.expectEqual(@as(usize, 0), doc.caret.pos.line);
+    try std.testing.expectEqual(@as(usize, 0), doc.caret.pos.col);
 }
 
 test "cursorInsert updates line/col and preferred_col" {
     const alloc = std.testing.allocator;
     var doc = try Document.init(alloc, "");
     defer doc.deinit();
-    try doc.cursorInsert("hi");
-    try std.testing.expectEqual(@as(usize, 0), doc.cursor.pos.line);
-    try std.testing.expectEqual(@as(usize, 2), doc.cursor.pos.col);
-    try std.testing.expectEqual(doc.cursor.pos.col, doc.cursor.preferred_col);
-    try doc.cursorInsert("\nxyz");
-    try std.testing.expectEqual(@as(usize, 1), doc.cursor.pos.line);
-    try std.testing.expectEqual(@as(usize, 3), doc.cursor.pos.col);
-    try std.testing.expectEqual(doc.cursor.pos.col, doc.cursor.preferred_col);
-}
-
-test "materializeLines returns exact byte range for middle line" {
-    const alloc = std.testing.allocator;
-    const src = "aaa\nbbb\nccc\n";
-    var doc = try Document.init(alloc, src);
-    defer doc.deinit();
-    var out = std.ArrayList(u8).init(alloc);
-    defer out.deinit();
-    try doc.materializeLines(out.writer(), 1, 1);
-    try std.testing.expectEqualSlices(u8, "bbb\n", out.items);
+    try doc.caretInsert("hi");
+    try std.testing.expectEqual(@as(usize, 0), doc.caret.pos.line);
+    try std.testing.expectEqual(@as(usize, 2), doc.caret.pos.col);
+    try std.testing.expectEqual(doc.caret.pos.col, doc.caret.preferred_col);
+    try doc.caretInsert("\nxyz");
+    try std.testing.expectEqual(@as(usize, 1), doc.caret.pos.line);
+    try std.testing.expectEqual(@as(usize, 3), doc.caret.pos.col);
+    try std.testing.expectEqual(doc.caret.pos.col, doc.caret.preferred_col);
 }
