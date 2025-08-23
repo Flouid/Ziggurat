@@ -76,6 +76,20 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    const dep_sokol = b.dependency("sokol", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const renderer_mod = b.addModule("renderer", .{
+        .root_source_file = b.path("src/core/renderer.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "sokol", .module = dep_sokol.module("sokol") },
+        },
+    });
+
     const fixture_gen = b.addExecutable(.{
         .name = "test-engine",
         .root_module = b.createModule(.{
@@ -104,15 +118,20 @@ pub fn build(b: *std.Build) void {
     const layout_tests = b.addTest(.{
         .root_module = layout_mod,
     });
+    const renderer_tests = b.addTest(.{
+        .root_module = renderer_mod
+    });
 
     const run_buffer_tests = b.addRunArtifact(buffer_tests);
     const run_doc_tests = b.addRunArtifact(doc_tests);
     const run_viewport_tests = b.addRunArtifact(viewport_tests);
     const run_layout_tests = b.addRunArtifact(layout_tests);
+    const run_renderer_tests = b.addRunArtifact(renderer_tests);
 
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_buffer_tests.step);
     test_step.dependOn(&run_doc_tests.step);
     test_step.dependOn(&run_viewport_tests.step);
     test_step.dependOn(&run_layout_tests.step);
+    test_step.dependOn(&run_renderer_tests.step);
 }
