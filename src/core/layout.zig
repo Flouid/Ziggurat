@@ -12,6 +12,7 @@ pub const ScreenPos = struct {
 
 pub const Layout = struct {
     first_row: usize,
+    width: usize,
     lines: []Span,
     caret: ?ScreenPos,
 };
@@ -29,10 +30,9 @@ pub fn build(arena: std.mem.Allocator, doc: *Document, vp: *const Viewport) erro
         const full_line = try doc.lineSpan(first + i);
         const len = full_line.len;
         const left = vp.left_col;
-        const width = vp.width;
         const col_start = if (left > len) len else left;
         const remaining_cols = len - col_start;
-        const col_count = if (width == 0) 0 else @min(width, remaining_cols);
+        const col_count = @min(vp.width, remaining_cols);
         lines[i] = .{
             .start = full_line.start + col_start,
             .len = col_count
@@ -40,6 +40,7 @@ pub fn build(arena: std.mem.Allocator, doc: *Document, vp: *const Viewport) erro
     }
     return .{
         .first_row = first,
+        .width = vp.width,
         .lines = lines,
         .caret = textPosToScreenPos(doc.caret.pos, vp)
     };

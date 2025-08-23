@@ -87,6 +87,8 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "sokol", .module = dep_sokol.module("sokol") },
+            .{ .name = "document", .module = doc_mod },
+            .{ .name = "layout", .module = layout_mod },
         },
     });
 
