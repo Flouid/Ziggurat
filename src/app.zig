@@ -8,14 +8,14 @@ const Theme     = @import("renderer").Theme;
 
 const CELL_PX: f32 = 8.0;
 
-const HARD_CODED_PATH = "../fixtures/example.txt";
+const HARD_CODED_PATH = "../../fixtures/example.txt";
 
 const App = struct {
-    gpa: std.heap.GeneralPurposeAllocator(.{}) = .{},
-    arena: std.heap.ArenaAllocator,
-    doc: Document,
-    vp: Viewport,
-    renderer: Renderer,
+    gpa: std.heap.GeneralPurposeAllocator(.{}),
+    arena: std.heap.ArenaAllocator = undefined,
+    doc: Document = undefined,
+    vp: Viewport = undefined,
+    renderer: Renderer = undefined,
 
     fn init(self: *App) !void {
         const gpa = self.gpa.allocator();
@@ -83,7 +83,7 @@ fn windowCells(pad_px_x: f32, pad_px_y: f32) struct { w: usize, h: usize} {
 }
 
 // GLOBAL app instance, sokol wants this
-var G: App = undefined;
+var G: App = .{ .gpa = std.heap.GeneralPurposeAllocator(.{}){} };
 
 // sokol callbacks
 
@@ -118,5 +118,6 @@ pub fn main() !void {
         .frame_cb = frame_cb,
         .cleanup_cb = cleanup_cb,
         .event_cb = event_cb,
+        .logger = .{ .func = @import("sokol").log.func },
     });
 }
