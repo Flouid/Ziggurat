@@ -118,7 +118,7 @@ const SdtxWriter = struct {
         self.end += bytes.len;
     }
 
-    pub fn flush(self: *SdtxWriter) void {
+    fn flush(self: *SdtxWriter) void {
         // null terminate the string and write it using sokol's standard debug
         if (self.buffer.len != 0) self.buffer[self.end] = 0;
         const s: [:0]const u8 = self.buffer[0..self.end :0];
