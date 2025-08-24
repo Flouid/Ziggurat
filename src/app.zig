@@ -33,9 +33,9 @@ const App = struct {
         };
         // initialize renderer
         self.renderer = Renderer.init(.{
-            .background = 0x101010FF,
-            .foreground = 0xE0E0E0FF,
-            .caret      = 0xFFD54FFF,
+            .background = 0x000000FF,
+            .foreground = 0xFFFFFFFF,
+            .caret      = 0xFFFFFFFF,
             .pad_px_x   = padding.x,
             .pad_px_y   = padding.y,
         });

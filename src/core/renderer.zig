@@ -20,29 +20,31 @@ pub const Theme = struct {
 };
 
 const SdtxWriter = struct {
+    // this will be passed as the writer into the document and text buffer.
+    // Since function arguments are immutable, internal state must be mutated by pointer
     buffer: []u8,
-    pos: usize = 0,
+    pos: *usize,
 
     pub const Error = error{};
 
     pub fn reset(self: *SdtxWriter) void {
-        self.pos = 0;
+        self.pos.* = 0;
     }
 
     pub fn writeAll(self: *const SdtxWriter, bytes: []const u8) !void {
         // write into a private buffer, accumulate any number of writes as long as they fit in one line
-        debug.dassert(bytes.len < self.buffer.len, "writer passes bytes longer than preallocated buffer");
-        var s = @constCast(self);
-        @memcpy(s.buffer[s.pos..s.pos + bytes.len], bytes);
-        s.pos += bytes.len;
+        if (bytes.len == 0) return;
+        debug.dassert(self.pos.* + bytes.len < self.buffer.len, "attempt to write past the end of line buffer");
+        @memcpy(self.buffer[self.pos.*..self.pos.* + bytes.len], bytes);
+        self.pos.* += bytes.len;
     }
 
     pub fn flush(self: *SdtxWriter) void {
         // null terminate the string and write it using sokol's standard debug
-        self.buffer[self.pos] = 0;
-        const s: [:0]const u8 = self.buffer[0..self.pos:0];
-        sdtx.putr(s, @intCast(self.pos));
-        self.pos = 0;
+        if (self.buffer.len != 0) self.buffer[self.pos.*] = 0;
+        const s: [:0]const u8 = self.buffer[0..self.pos.* :0];
+        sdtx.putr(s, @as(i32, @intCast(self.pos.*)));
+        self.pos.* = 0;
     }
 };
 
@@ -52,12 +54,8 @@ pub const Renderer = struct {
     pub fn init(theme: Theme) Renderer {
         const renderer = Renderer{ .theme = theme };
         sgfx.setup(.{ .environment = sglue.environment() });
-        sdtx.setup(.{
-            .fonts = .{
-                sdtx.fontKc853(),
-                .{}, .{}, .{}, .{}, .{}, .{}, .{}, // 1..7 unused
-            },
-        });
+        sdtx.setup(.{ .fonts = .{ sdtx.fontKc853(), .{}, .{}, .{}, .{}, .{}, .{}, .{} } });
+        sdtx.font(0);
         sgl.setup(.{});
         return renderer;
     }
@@ -71,10 +69,7 @@ pub const Renderer = struct {
     pub fn beginFrame(self: *const Renderer) void {
         const pass = sgfx.Pass{
             .action = .{
-                .colors = .{ 
-                    .{ .load_action = .CLEAR, .clear_value = toColor(self.theme.background) },
-                    .{}, .{}, .{}, 
-                },
+                .colors = .{ .{ .load_action = .CLEAR, .clear_value = toColor(self.theme.background) }, .{}, .{}, .{} },
             },
             .swapchain = sglue.swapchain(),
         };
@@ -101,13 +96,14 @@ pub const Renderer = struct {
         defer a.free(line_buffer);
         // materialize the doc lines directly into sokol's debugtext
         var row: usize = 0;
-        var writer = SdtxWriter{ .buffer = line_buffer };
+        var pos: usize = 0;
+        var writer = SdtxWriter{ .buffer = line_buffer, .pos = &pos};
         while (row < layout.lines.len) : (row += 1) {
-            const slice = layout.lines[row];
+            const line = layout.lines[row];
             sdtx.pos(0, @floatFromInt(row));
-            if (slice.len != 0) {
+            if (line.len != 0) {
                 writer.reset();
-                try doc.materializeRange(writer, slice.start, slice.len);
+                try doc.materializeRange(writer, line.start, line.len);
                 writer.flush();
             }
         }
