@@ -149,12 +149,12 @@ pub const Document = struct {
 
     // materialization and span generation
 
-    pub fn materializeRange(self: *const Document, w: anytype, start: usize, len: usize) @TypeOf(w).Error!void {
+    pub fn materializeRange(self: *Document, w: anytype, start: usize, len: usize) @TypeOf(w).Error!void {
         // pass-through method for materializing a range of bytes
         try self.buffer.materializeRange(w, start, len);
     }
 
-    pub fn materialize(self: *const Document, w: anytype) @TypeOf(w).Error!void {
+    pub fn materialize(self: *Document, w: anytype) @TypeOf(w).Error!void {
         // pass-through method for materializing a full document
         try self.buffer.materialize(w);
     }

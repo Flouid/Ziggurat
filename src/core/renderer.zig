@@ -1,4 +1,5 @@
 const std = @import("std");
+const debug = @import("debug");
 const Document = @import("document").Document;
 const Layout = @import("layout").Layout;
 const sokol = @import("sokol");
@@ -19,16 +20,29 @@ pub const Theme = struct {
 };
 
 const SdtxWriter = struct {
-    pub const Error = error{};
-    pub const Writer = std.io.Writer(*SdtxWriter, Error, write);
+    buffer: []u8,
+    pos: usize = 0,
 
-    pub fn writer(self: *SdtxWriter) Writer {
-        return .{ .context = self };
+    pub const Error = error{};
+
+    pub fn reset(self: *SdtxWriter) void {
+        self.pos = 0;
     }
 
-    fn write(_: *SdtxWriter, bytes: []const u8) !usize {
-        if (bytes.len != 0) sdtx.putr(bytes.ptr, @intCast(bytes.len));
-        return bytes.len;
+    pub fn writeAll(self: *const SdtxWriter, bytes: []const u8) !void {
+        // write into a private buffer, accumulate any number of writes as long as they fit in one line
+        debug.dassert(bytes.len < self.buffer.len, "writer passes bytes longer than preallocated buffer");
+        var s = @constCast(self);
+        @memcpy(s.buffer[s.pos..s.pos + bytes.len], bytes);
+        s.pos += bytes.len;
+    }
+
+    pub fn flush(self: *SdtxWriter) void {
+        // null terminate the string and write it using sokol's standard debug
+        self.buffer[self.pos] = 0;
+        const s: [:0]const u8 = self.buffer[0..self.pos:0];
+        sdtx.putr(s, @intCast(self.pos));
+        self.pos = 0;
     }
 };
 
@@ -36,35 +50,43 @@ pub const Renderer = struct {
     theme: Theme,
 
     pub fn init(theme: Theme) Renderer {
-        const renderer = .{ .theme = theme };
-        sgfx.setup(.{ .environment = sglue.environment()} );
-        sdtx.setup(.{ .fonts = .{ sdtx.font_kc853() } });
+        const renderer = Renderer{ .theme = theme };
+        sgfx.setup(.{ .environment = sglue.environment() });
+        sdtx.setup(.{
+            .fonts = .{
+                sdtx.fontKc853(),
+                .{}, .{}, .{}, .{}, .{}, .{}, .{}, // 1..7 unused
+            },
+        });
         sgl.setup(.{});
         return renderer;
     }
 
-    pub fn deinit() void {
+    pub fn deinit(_: *Renderer) void {
         sgl.shutdown();
         sdtx.shutdown();
         sgfx.shutdown();
     }
 
     pub fn beginFrame(self: *const Renderer) void {
-        var pass = sgfx.Pass{
+        const pass = sgfx.Pass{
             .action = .{
-                .colors = .{ .{ .load_action = .CLEAR, .clear_value = toColor(self.theme.background) } },
+                .colors = .{ 
+                    .{ .load_action = .CLEAR, .clear_value = toColor(self.theme.background) },
+                    .{}, .{}, .{}, 
+                },
             },
             .swapchain = sglue.swapchain(),
         };
-        sgfx.beginPass(&pass);
+        sgfx.beginPass(pass);
     }
 
-    pub fn endFrame() void {
+    pub fn endFrame(_: *const Renderer) void {
         sgfx.endPass();
         sgfx.commit();
     }
 
-    pub fn draw(self: *Renderer, doc: *const Document, layout: *const Layout) !void {
+    pub fn draw(self: *Renderer, doc: *Document, layout: *const Layout) !void {
         const rows = layout.lines.len;
         const cols = layout.width;
         if (rows == 0 or cols == 0) return;
@@ -73,14 +95,20 @@ pub const Renderer = struct {
         sdtx.origin(self.theme.pad_px_x, self.theme.pad_px_y);
         sdtx.home();
         sdtx.color1i(rgbaToAbgr(self.theme.foreground)); // nasty RGBA vs ABGR footgun
+        // allocate a per-frame line buffer, allows sentintel terminated strings
+        var a = std.heap.page_allocator;
+        const line_buffer = try a.alloc(u8, cols + 1);
+        defer a.free(line_buffer);
         // materialize the doc lines directly into sokol's debugtext
         var row: usize = 0;
-        var out = SdtxWriter{};
+        var writer = SdtxWriter{ .buffer = line_buffer };
         while (row < layout.lines.len) : (row += 1) {
             const slice = layout.lines[row];
-            sdtx.pos(0, @intCast(row));
+            sdtx.pos(0, @floatFromInt(row));
             if (slice.len != 0) {
-                try doc.materializeRange(out.writer(), slice.start, slice.len);
+                writer.reset();
+                try doc.materializeRange(writer, slice.start, slice.len);
+                writer.flush();
             }
         }
         // draw the caret
@@ -118,8 +146,4 @@ fn toColor(rgba: u32) sgfx.Color {
     const g = @as(f32, @floatFromInt((rgba >> 16) & 0xFF)) / 255.0;
     const r = @as(f32, @floatFromInt((rgba >> 24) & 0xFF)) / 255.0;
     return .{ .r = r, .g = g, .b = b, .a = a };
-}
-
-test "compiles?" {
-    try std.testing.expect(true);
 }
