@@ -15,8 +15,9 @@ pub const Theme = struct {
     background: u32,
     foreground: u32,
     caret: u32,
-    pad_px_x: f32,
-    pad_px_y: f32,
+    // number of TEXT CELLS to pad x and y around the borders
+    pad_x: f32,
+    pad_y: f32,
 };
 
 const SdtxWriter = struct {
@@ -46,6 +47,11 @@ const SdtxWriter = struct {
         sdtx.putr(s, @as(i32, @intCast(self.pos.*)));
         self.pos.* = 0;
     }
+};
+
+const Dimensions = struct {
+    x: f32,
+    y: f32,
 };
 
 pub const Renderer = struct {
@@ -86,8 +92,9 @@ pub const Renderer = struct {
         const cols = layout.width;
         if (rows == 0 or cols == 0) return;
         // set positions, create canvas, set text color
-        sdtx.canvas(@floatFromInt(sapp.width()), @floatFromInt(sapp.height()));
-        sdtx.origin(self.theme.pad_px_x, self.theme.pad_px_y);
+        const appDims = Dimensions{ .x = @floatFromInt(sapp.width()), .y = @floatFromInt(sapp.height()) };
+        sdtx.canvas(appDims.x, appDims.y);
+        sdtx.origin(self.theme.pad_x, self.theme.pad_y);
         sdtx.home();
         sdtx.color1i(rgbaToAbgr(self.theme.foreground)); // nasty RGBA vs ABGR footgun
         // allocate a per-frame line buffer, allows sentintel terminated strings
@@ -107,22 +114,30 @@ pub const Renderer = struct {
                 writer.flush();
             }
         }
+        sdtx.draw();
         // draw the caret
+        // sgl operates in clip space, so translate from the pixels we used in sdtx
         if (layout.caret) |caret| {
-            const x = self.theme.pad_px_x + @as(f32, @floatFromInt(caret.col)) * 8;
-            const y = self.theme.pad_px_y + @as(f32, @floatFromInt(caret.row)) * 8;
-            sgl.beginQuads();
+            const cell_size: f32 = 8.0;
+            const x = (self.theme.pad_x + @as(f32, @floatFromInt(caret.col))) * cell_size;
+            const y = (self.theme.pad_y + @as(f32, @floatFromInt(caret.row))) * cell_size;
+            const h = cell_size;
+            const w = cell_size / 4;
+            // calculate vertices in clip space
+            const p0 = px_to_ndc(x,   y,   appDims);
+            const p1 = px_to_ndc(x+w, y,   appDims);
+            const p2 = px_to_ndc(x+w, y+h, appDims);
+            const p3 = px_to_ndc(x,   y+h, appDims);
+            // draw filled rectangle for the caret
             sgl.c1i(self.theme.caret);
-            const h: f32 = 8.0;
-            const w: f32 = 2.0;
-            sgl.v2f(x,   y);
-            sgl.v2f(x+w, y);
-            sgl.v2f(x+w, y+h);
-            sgl.v2f(x,   y+h);
+            sgl.beginQuads();
+            sgl.v2f(p0.x, p0.y);
+            sgl.v2f(p1.x, p1.y);
+            sgl.v2f(p2.x, p2.y);
+            sgl.v2f(p3.x, p3.y);
             sgl.end();
             sgl.draw();
         }
-        sdtx.draw();
     }
 };
 
@@ -143,3 +158,12 @@ fn toColor(rgba: u32) sgfx.Color {
     const r = @as(f32, @floatFromInt((rgba >> 24) & 0xFF)) / 255.0;
     return .{ .r = r, .g = g, .b = b, .a = a };
 }
+
+fn px_to_ndc(x_px: f32, y_px: f32, appDims: Dimensions) Dimensions {
+    // translate pixel space to clip space
+    return .{
+        .x = (x_px / appDims.x) * 2.0 - 1.0,
+        .y = 1.0 - (y_px / appDims.y) * 2.0,
+    };
+}
+

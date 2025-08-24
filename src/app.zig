@@ -23,8 +23,8 @@ const App = struct {
         const bytes = try std.fs.cwd().readFileAlloc(gpa, HARD_CODED_PATH, std.math.maxInt(usize));
         self.doc = try Document.init(gpa, bytes);
         // initialize viewport
-        const padding = .{ .x = 1.0, .y = 1.0 };
-        const dims = windowCells(padding.x, padding.y);
+        const pad = .{ .x = 1.0, .y = 1.0 };
+        const dims = windowCells(pad.x, pad.y);
         self.vp = .{
             .top_line = 0,
             .left_col = 0,
@@ -36,8 +36,8 @@ const App = struct {
             .background = 0x000000FF,
             .foreground = 0xFFFFFFFF,
             .caret      = 0xFFFFFFFF,
-            .pad_px_x   = padding.x,
-            .pad_px_y   = padding.y,
+            .pad_x      = pad.x,
+            .pad_y      = pad.y,
         });
         // initialize arena for rendering each frame
         self.arena = std.heap.ArenaAllocator.init(gpa);
@@ -52,7 +52,7 @@ const App = struct {
 
     fn frame(self: *App) !void {
         // calculating dimensions per frame natively supports resizing
-        const dims = windowCells(self.renderer.theme.pad_px_x, self.renderer.theme.pad_px_y);
+        const dims = windowCells(self.renderer.theme.pad_x, self.renderer.theme.pad_y);
         self.vp.height = dims.h;
         self.vp.width  = dims.w;
         // keep caret visible and clamped within the frame
@@ -71,11 +71,11 @@ const App = struct {
     }
 };
 
-fn windowCells(pad_px_x: f32, pad_px_y: f32) struct { w: usize, h: usize} {
+fn windowCells(pad_x: f32, pad_y: f32) struct { w: usize, h: usize} {
     const w_px = @as(f32, @floatFromInt(sapp.width()));
     const h_px = @as(f32, @floatFromInt(sapp.height()));
-    const avail_w = w_px - 2.0 * pad_px_x;
-    const avail_h = h_px - 2.0 * pad_px_y;
+    const avail_w = w_px - 2.0 * pad_x;
+    const avail_h = h_px - 2.0 * pad_y;
 
     const cols: usize = if (avail_w <= 0) 0 else @intFromFloat(@floor(avail_w / CELL_PX));
     const rows: usize = if (avail_h <= 0) 0 else @intFromFloat(@floor(avail_h / CELL_PX));
