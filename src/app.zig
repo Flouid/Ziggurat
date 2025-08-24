@@ -23,7 +23,7 @@ const App = struct {
         const bytes = try std.fs.cwd().readFileAlloc(gpa, HARD_CODED_PATH, std.math.maxInt(usize));
         self.doc = try Document.init(gpa, bytes);
         // initialize viewport
-        const padding = .{ .x = 4.0, .y = 4.0 };
+        const padding = .{ .x = 1.0, .y = 1.0 };
         const dims = windowCells(padding.x, padding.y);
         self.vp = .{
             .top_line = 0,
