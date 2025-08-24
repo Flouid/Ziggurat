@@ -22,30 +22,24 @@ pub const Theme = struct {
 
 const SdtxWriter = struct {
     // this will be passed as the writer into the document and text buffer.
-    // Since function arguments are immutable, internal state must be mutated by pointer
+    // Loosely mirrors the Io.Writer interface, but I'm too smooth brained to figure that out
     buffer: []u8,
-    pos: *usize,
+    end: usize = 0,
 
-    pub const Error = error{};
-
-    pub fn reset(self: *SdtxWriter) void {
-        self.pos.* = 0;
-    }
-
-    pub fn writeAll(self: *const SdtxWriter, bytes: []const u8) !void {
+    pub fn writeAll(self: *SdtxWriter, bytes: []const u8) !void {
         // write into a private buffer, accumulate any number of writes as long as they fit in one line
         if (bytes.len == 0) return;
-        debug.dassert(self.pos.* + bytes.len < self.buffer.len, "attempt to write past the end of line buffer");
-        @memcpy(self.buffer[self.pos.*..self.pos.* + bytes.len], bytes);
-        self.pos.* += bytes.len;
+        debug.dassert(self.end + bytes.len < self.buffer.len, "attempt to write past the end of line buffer");
+        @memcpy(self.buffer[self.end..self.end + bytes.len], bytes);
+        self.end += bytes.len;
     }
 
     pub fn flush(self: *SdtxWriter) void {
         // null terminate the string and write it using sokol's standard debug
-        if (self.buffer.len != 0) self.buffer[self.pos.*] = 0;
-        const s: [:0]const u8 = self.buffer[0..self.pos.* :0];
-        sdtx.putr(s, @as(i32, @intCast(self.pos.*)));
-        self.pos.* = 0;
+        if (self.buffer.len != 0) self.buffer[self.end] = 0;
+        const s: [:0]const u8 = self.buffer[0..self.end :0];
+        sdtx.putr(s, @as(i32, @intCast(self.end)));
+        self.end = 0;
     }
 };
 
@@ -103,16 +97,12 @@ pub const Renderer = struct {
         defer a.free(line_buffer);
         // materialize the doc lines directly into sokol's debugtext
         var row: usize = 0;
-        var pos: usize = 0;
-        var writer = SdtxWriter{ .buffer = line_buffer, .pos = &pos};
+        var writer = SdtxWriter{ .buffer = line_buffer };
         while (row < layout.lines.len) : (row += 1) {
-            const line = layout.lines[row];
             sdtx.pos(0, @floatFromInt(row));
-            if (line.len != 0) {
-                writer.reset();
-                try doc.materializeRange(writer, line.start, line.len);
-                writer.flush();
-            }
+            const line = layout.lines[row];
+            try doc.materializeRange(&writer, line.start, line.len);
+            writer.flush();
         }
         sdtx.draw();
         // draw the caret

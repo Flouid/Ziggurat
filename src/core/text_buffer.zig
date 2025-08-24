@@ -2,9 +2,9 @@ const std = @import("std");
 const debug = @import("debug");
 const utils = @import("utils");
 
-// The piece-table implementation for storing edits to a document efficiently in memory.
+// The piece-tree implementation for storing edits to a document efficiently in memory.
 // There are two distinct but highly coupled data structures implemented here.
-// Top-level is a piece table, but storing pieces in an array is SLOW! O(P)
+// Top-level is a piece tree, but storing pieces in an array is SLOW! O(P)
 // Pieces are stored in a rope implemented as a b-tree.
 // With P = # pieces:
 //   Locate index -> leaf:  O(log_{MIN_BRANCH} P)
@@ -13,6 +13,574 @@ const utils = @import("utils");
 //     - Rebalance path:    O(log_{MIN_BRANCH} P * MAX_BRANCH)
 //     => Overall:          O(log_{MIN_BRANCH} P) with small constants
 //   Range edit spanning t pieces: O(log_{MIN_BRANCH} P + t)
+
+// public interface at the top
+
+pub const TextBuffer = struct {
+    // The text buffer is a b-tree of pieces.
+    // Holds a pointer to the original document as well as a working append-only buffer.
+    // Holds a collection of ordered "pieces" which describe how to build a final document using the two buffers.
+    // In order to find any given piece in O(log n) time, the collection of pieces is a tree.
+    original: []const u8,
+    add: std.ArrayList(u8),
+    o_idx: NewLineIndex,
+    a_idx: NewLineIndex,
+    root: *Node,
+    doc_len: usize,
+    alloc: std.mem.Allocator,
+
+    pub fn init(alloc: std.mem.Allocator, original: []const u8) error{ OutOfMemory, FileTooBig }!TextBuffer {
+        // enforce the assertion about maximum file sizes even in release modes.
+        const limit = @as(usize, 1) << (@bitSizeOf(usize) - 1);
+        if (original.len >= limit) return error.FileTooBig;
+        // initialize the root of the tree
+        const leaf = try initLeaf(alloc);
+        if (original.len > 0) {
+            try leafPieces(leaf).append(alloc, Piece.init(.Original, original.len, 0));
+            leaf.weight_bytes = original.len;
+        }
+        var engine = TextBuffer{
+            .original = original,
+            .add = .empty,
+            .o_idx = NewLineIndex.init(),
+            .a_idx = NewLineIndex.init(),
+            .root = leaf,
+            .doc_len = original.len,
+            .alloc = alloc,
+        };
+        if (original.len > 0) leaf.weight_lines = try engine.o_idx.countRange(alloc, original, 0, original.len);
+        return engine;
+    }
+
+    pub fn deinit(self: *TextBuffer) void {
+        self.add.deinit(self.alloc);
+        self.o_idx.deinit(self.alloc);
+        self.a_idx.deinit(self.alloc);
+        freeTree(self.alloc, self.root);
+    }
+
+    pub fn insert(self: *TextBuffer, at: usize, text: []const u8) error{OutOfMemory}!void {
+        debug.dassert(at <= self.doc_len, "cannot insert outside of the document.");
+        debug.dassert(text.len > 0, "cannot insert empty text");
+        const add_offset = self.add.items.len;
+        try self.add.appendSlice(self.alloc, text);
+        // count how many newlines just got added
+        const newlines = try self.a_idx.countRange(self.alloc, self.add.items, add_offset, text.len);
+        // find the leaf node that corresponds to the insertion index
+        const found = findAt(self.root, at);
+        const leaf = found.leaf;
+        const pieces = leafPieces(leaf);
+        // under the ideal case, new edits are appended to the end and extend an existing piece
+        if (fastAppendIfPossible(leaf, add_offset, text.len, at, self.doc_len)) {
+            bubbleByteDelta(leaf, text.len, false);
+            bubbleLineDelta(leaf, newlines, false);
+            self.doc_len += text.len;
+            return;
+        }
+        const loc = locateInLeaf(leaf, found.offset);
+        const idx = try spliceIntoLeaf(pieces, self.alloc, loc, add_offset, text.len);
+        mergeAround(leaf, idx);
+        bubbleByteDelta(leaf, text.len, false);
+        bubbleLineDelta(leaf, newlines, false);
+        try self.bubbleOverflowUp(leaf);
+        self.doc_len += text.len;
+    }
+
+    pub fn delete(self: *TextBuffer, at: usize, len: usize) error{OutOfMemory}!void {
+        debug.dassert(at + len <= self.doc_len, "cannot delete outside of document");
+        debug.dassert(len > 0, "cannot delete empty span");
+        var remaining = len;
+        const found = findAt(self.root, at);
+        var leaf = found.leaf;
+        var offset = found.offset;
+        const left: *Node = leaf;
+        while (remaining > 0) {
+            const in_leaf = locateInLeaf(leaf, offset);
+            const removed = try self.deleteFromLeaf(leaf, in_leaf, remaining);
+            bubbleByteDelta(leaf, removed.bytes, true);
+            bubbleLineDelta(leaf, removed.lines, true);
+            remaining -= removed.bytes;
+            offset = 0;
+            const next_leaf = nextLeaf(leaf);
+            if (remaining > 0) {
+                debug.dassert(next_leaf != null, "reached rightmost leaf with non-empty deletion queue");
+                leaf = next_leaf.?;
+            }
+        }
+        try self.repairAfterDelete(left, leaf);
+        self.doc_len -= len;
+    }
+
+    pub fn lineOfByte(self: *TextBuffer, at: usize) error{OutOfMemory}!usize {
+        // map any index in the working document to a line number
+        debug.dassert(at <= self.doc_len, "offset out of range");
+        if (at == self.doc_len) return self.root.weight_lines;
+        var node = self.root;
+        var offset = at;
+        var lines_before: usize = 0;
+        var iter: usize = 0;
+        while (iter < MAX_ITER) : (iter += 1) {
+            switch (node.children) {
+                .leaf => {
+                    // count newlines in all full pieces before the offset
+                    const pieces = leafPiecesConst(node).items;
+                    var acc: usize = 0;
+                    var i: usize = 0;
+                    while (i < pieces.len and acc + pieces[i].len() <= offset) : (i += 1) {
+                        lines_before += try self.countLinesInPiece(&pieces[i]);
+                        acc          += pieces[i].len();
+                    }
+                    debug.dassert(i < pieces.len, "failed to find line");
+                    // add newlines inside the piece up to our offset
+                    lines_before += try self.countLinesInPieceRange(&pieces[i], 0, offset - acc);
+                    return lines_before;
+                },
+                .internal => |*children| {
+                    var i: usize = 0;
+                    while (i < children.items.len) : (i += 1) {
+                        const child = children.items[i];
+                        if (offset < child.weight_bytes) { node = child; break; }
+                        offset       -= child.weight_bytes;
+                        lines_before += child.weight_lines;
+                    }
+                    debug.dassert(i < children.items.len, "failed to find line");
+                },
+            }
+        }
+        @panic("max iterations reached without finding index in document");
+    }
+
+    pub fn byteOfLine(self: *TextBuffer, line: usize) error{OutOfMemory}!usize {
+        // map any line number to an index in the working document
+        debug.dassert(line <= self.root.weight_lines, "line out of range");
+        var node = self.root;
+        var remaining = line;
+        var offset: usize = 0;
+        var iter: usize = 0;
+        while (iter < MAX_ITER) : (iter += 1) {
+            switch (node.children) {
+                .leaf => {
+                    const pieces = leafPiecesConst(node).items;
+                    var acc: usize = 0;
+                    var i: usize = 0;
+                    while (i < pieces.len and remaining > 0) : (i += 1) {
+                        const piece = &pieces[i];
+                        const lines_in_piece = try self.countLinesInPiece(piece);
+                        if (remaining <= lines_in_piece) {
+                            return offset + acc + self.findNthNewlineInPiece(piece, remaining) + 1;
+                        } else {
+                            remaining -= lines_in_piece;
+                            acc       += piece.len();
+                        }
+                    }
+                    // edge case, newline at the very end of the piece
+                    return offset + acc;
+                },
+                .internal => |*children| {
+                    var i: usize = 0;
+                    while (i < children.items.len) : (i += 1) {
+                        const child = children.items[i];
+                        if (remaining <= child.weight_lines) { node = child; break; }
+                        remaining -= child.weight_lines;
+                        offset    += child.weight_bytes;
+                    }
+                    debug.dassert(i < children.items.len, "failed to find line");
+                }
+            }
+        }
+        @panic("max iterations reached without finding line in document");
+    }
+
+    pub fn materializeRange(self: *TextBuffer, w: anytype, start: usize, len: usize) !void {
+        // when a view should be written directly to a writer
+        if (len == 0) return;
+        var it = self.getSliceIter(start, len);
+        while (it.next()) |slice| try w.writeAll(slice);
+    }
+
+    pub fn materialize(self: *TextBuffer, w: anytype) !void {
+        // when the entire document should be written directly to a writer (e.g. saving)
+        try self.materializeRange(w, 0, self.doc_len);
+    }
+
+    // -------------------- EVERYTHING BENEATH THIS LINE IS A PRIVATE IMPLEMENTATION DETAIL --------------------
+
+    // -------------------- ITERATION HELPERS --------------------
+
+    fn getSliceIter(self: *TextBuffer, start: usize, len: usize) SliceIter {
+        debug.dassert(start + len <= self.doc_len, "view out of bounds");
+        debug.dassert(len > 0, "cannot provide an empty view");
+        return SliceIter.init(self, start, len);
+    }
+
+    // -------------------- INSERT HELPERS --------------------
+
+    fn bubbleOverflowUp(self: *TextBuffer, start: *Node) error{OutOfMemory}!void {
+        // It's possible that a node split overflows it's parent, which splits and overflows IT'S parent...
+        // Thus the logic needs to "bubble up" from the bottom of the tree until splits stop happening
+        var cur: ?*Node = start;
+        while (cur) |n| {
+            const parent = try self.splitNodeIfOverflow(n);
+            if (parent == null) return;
+            cur = parent;
+        }
+    }
+
+    fn splitNodeIfOverflow(self: *TextBuffer, node: *Node) error{OutOfMemory}!?*Node {
+        // this function will look at ANY node and perform the following logic:
+        //  1. if this node has less than the maximum number of children, do nothing
+        //  2. if it DOES have less than the max, split it in half into a new node
+        //  3. if it has a parent, it adds the new node as a sibling AND RETURNS IT
+        //  4. if it doesn't have a parent, it creates a new internal node as root
+        // if this function returns a non-null value, then parents must also be checked for overflow.
+        // is agnostic to leaf/internal nodes, but the implementations are fairly different.
+        switch (node.children) {
+            .leaf => |*pieces| {
+                if (pieces.items.len <= MAX_PIECES) return null;
+                // split half of the pieces into a new sibling
+                const mid = pieces.items.len / 2;
+                const right = try initLeaf(self.alloc);
+                // calculate exactly how many bytes and lines are moving
+                const to_move = pieces.items[mid..];
+                const moved = try self.countMovedPieces(to_move);
+                // move them
+                try leafPieces(right).appendSlice(self.alloc, to_move);
+                pieces.shrinkRetainingCapacity(mid);
+                // manually adjust node weights, faster than a full recompute
+                debug.dassert(node.weight_bytes >= moved.bytes, "leaf split byte size underflow");
+                debug.dassert(node.weight_lines >= moved.lines, "leaf split line size underflow");
+                node.weight_bytes -= moved.bytes;
+                node.weight_lines -= moved.lines;
+                right.weight_bytes = moved.bytes;
+                right.weight_lines = moved.lines;
+                // add the newly split node into the tree
+                return self.spliceNodeInTree(node, right);
+            },
+            .internal => |*children| {
+                // same as leaf case above, but just different enough to not be one function call
+                if (children.items.len <= MAX_BRANCH) return null;
+                const mid = children.items.len / 2;
+                const right = try initInternal(self.alloc);
+                const to_move = children.items[mid..];
+                const moved = countMovedNodes(to_move);
+                try childList(right).appendSlice(self.alloc, to_move);
+                children.shrinkRetainingCapacity(mid);
+                // fix parent pointers
+                for (childList(right).items) |child| child.parent = right;
+                debug.dassert(node.weight_bytes >= moved.bytes, "node split byte size underflow");
+                debug.dassert(node.weight_lines >= moved.lines, "node split line size underflow");
+                node.weight_bytes -= moved.bytes;
+                node.weight_lines -= moved.lines;
+                right.weight_bytes = moved.bytes;
+                right.weight_lines = moved.lines;
+                return self.spliceNodeInTree(node, right);
+            },
+        }
+    }
+
+    fn spliceNodeInTree(self: *TextBuffer, old: *Node, new: *Node) error{OutOfMemory}!?*Node {
+        // general case, add the new node one to the right of the old
+        if (old.parent) |parent| {
+            const siblings = childList(parent);
+            const idx = indexOfChild(siblings.items, old);
+            try siblings.insert(self.alloc, idx + 1, new);
+            new.parent = parent;
+            return parent;
+            // edge case, old node was the root, create a new root and create both as siblings
+        } else {
+            const root = try initInternal(self.alloc);
+            try childList(root).append(self.alloc, old);
+            try childList(root).append(self.alloc, new);
+            old.parent = root;
+            new.parent = root;
+            root.weight_bytes = old.weight_bytes + new.weight_bytes;
+            root.weight_lines = old.weight_lines + new.weight_lines;
+            self.root = root;
+            return null;
+        }
+    }
+
+    // -------------------- DELETE HELPERS --------------------
+
+    const DeleteResult = struct { bytes: usize, lines: usize };
+
+    fn deleteFromLeaf(self: *TextBuffer, leaf: *Node, start: InLeaf, max_remove: usize) error{OutOfMemory}!DeleteResult {
+        // attempt to delete at most max_remove bytes from the current leaf.
+        // return the total number that could be deleted, deletion may go into another node.
+        var pieces = leafPieces(leaf);
+        var removed_bytes: usize = 0;
+        var removed_lines: usize = 0;
+        var piece_idx = start.piece_idx;
+        const prefix_len = start.offset;
+        if (piece_idx >= pieces.items.len) return .{ .bytes = 0, .lines = 0 };
+        // handle the current (first) piece
+        var piece = &pieces.items[piece_idx];
+        var take = @min(max_remove, piece.len() - prefix_len);
+        // if we can't just delete the entire thing
+        if (prefix_len > 0 or take < piece.len()) {
+            removed_lines += try self.countLinesInPieceRange(piece, prefix_len, take);
+            const suffix_len = piece.len() - prefix_len - take;
+            // delete lands in the middle of the piece
+            if (prefix_len > 0 and suffix_len > 0) {
+                piece.setLen(prefix_len);
+                var suffix = piece.*;
+                suffix.off += prefix_len + take;
+                suffix.setLen(suffix_len);
+                try pieces.insert(self.alloc, piece_idx + 1, suffix);
+                piece_idx += 1;
+                // there is no suffix, trim the front
+            } else if (prefix_len > 0) {
+                piece.setLen(prefix_len);
+                piece_idx += 1;
+            }
+            // there is no prefix, trim the tail
+            else {
+                piece.off += take;
+                piece.setLen(suffix_len);
+            }
+            removed_bytes += take;
+        }
+        // if applicable, remove entire middle pieces, coalesce into one big delete at the end
+        var end_range = piece_idx;
+        while (end_range < pieces.items.len and removed_bytes < max_remove) : (end_range += 1) {
+            piece = &pieces.items[end_range];
+            const can_take = @min(piece.len(), max_remove - removed_bytes);
+            if (can_take < piece.len()) break;
+            removed_bytes += piece.len();
+            removed_lines += try self.countLinesInPiece(piece);
+        }
+        if (end_range > piece_idx) utils.orderedRemoveRange(Piece, pieces, piece_idx, end_range - piece_idx);
+        // we may still need to remove the front of one final piece
+        if (piece_idx < pieces.items.len and removed_bytes < max_remove) {
+            piece = &pieces.items[piece_idx];
+            take = max_remove - removed_bytes;
+            removed_lines += try self.countLinesInPieceRange(piece, 0, take);
+            piece.off += take;
+            piece.shrinkBy(take);
+            removed_bytes += take;
+        }
+        // if there are still pieces left, perform a local coalesce before returning
+        const removed = DeleteResult{ .bytes = removed_bytes, .lines = removed_lines };
+        if (pieces.items.len == 0) return removed;
+        if (piece_idx == pieces.items.len) piece_idx -= 1;
+        mergeAround(leaf, piece_idx);
+        return removed;
+    }
+
+    fn transferRangeBetweenSiblings(self: *TextBuffer, src: *Node, dst: *Node, start: usize, count: usize, side: enum { Front, Back }) error{OutOfMemory}!void {
+        debug.dassert(count > 0, "cannot transfer 0 nodes between siblings");
+        debug.dassert(std.meta.activeTag(src.children) == std.meta.activeTag(dst.children), "source and destination must be the same type of node");
+        debug.dassert(start == 0 or start + count == nodeCount(src), "insertions must be contiguous with start or end of source");
+        switch (src.children) {
+            .leaf => {
+                const src_pieces = leafPieces(src);
+                const dst_pieces = leafPieces(dst);
+                debug.dassert(src_pieces.items.len >= count, "source must contain enough items to transfer");
+                debug.dassert(dst_pieces.items.len > 0, "destination must not start empty");
+                // calculate exactly how many bytes and lines are moving
+                const to_move = src_pieces.items[start .. start + count];
+                const moved = try self.countMovedPieces(to_move);
+                switch (side) {
+                    .Front => try dst_pieces.insertSlice(self.alloc, 0, to_move),
+                    .Back  => try dst_pieces.appendSlice(self.alloc, to_move),
+                }
+                _ = utils.orderedRemoveRange(Piece, src_pieces, start, count);
+                // check for new merge opportunities
+                const center: usize = switch (side) {
+                    .Front => count,
+                    .Back  => dst_pieces.items.len - count,
+                };
+                mergeAround(dst, center);
+                bubbleByteDelta(src, moved.bytes, true);
+                bubbleByteDelta(dst, moved.bytes, false);
+                bubbleLineDelta(src, moved.lines, true);
+                bubbleLineDelta(dst, moved.lines, false);
+            },
+            .internal => {
+                const src_children = childList(src);
+                const dst_children = childList(dst);
+                debug.dassert(src_children.items.len >= count, "source must contain enough items to transfer");
+                debug.dassert(dst_children.items.len > 0, "destination must not start empty");
+                // calculate exactly how many bytes and lines are moving
+                const to_move = src_children.items[start .. start + count];
+                const moved = countMovedNodes(to_move);
+                switch (side) {
+                    .Front => try dst_children.insertSlice(self.alloc, 0, to_move),
+                    .Back  => try dst_children.appendSlice(self.alloc, to_move),
+                }
+                _ = utils.orderedRemoveRange(*Node, src_children, start, count);
+                // fix parent pointers for moved children
+                const adopted = switch (side) {
+                    .Front => dst_children.items[0..count],
+                    .Back  => dst_children.items[dst_children.items.len - count ..],
+                };
+                for (adopted) |child| child.parent = dst;
+                bubbleByteDelta(src, moved.bytes, true);
+                bubbleByteDelta(dst, moved.bytes, false);
+                bubbleLineDelta(src, moved.lines, true);
+                bubbleLineDelta(dst, moved.lines, false);
+            },
+        }
+    }
+
+    fn tryBorrow(self: *TextBuffer, node: *Node, siblings: Siblings) error{OutOfMemory}!usize {
+        // uses a borrow plan to take exactly as many nodes from neighbors as can be spared
+        const plan = planBorrow(node, siblings);
+        if (siblings.l) |left| {
+            if (plan.take_left > 0) {
+                try self.transferRangeBetweenSiblings(left, node, nodeCount(left) - plan.take_left, plan.take_left, .Front);
+            }
+        }
+        if (siblings.r) |right| {
+            if (plan.take_right > 0) {
+                try self.transferRangeBetweenSiblings(right, node, 0, plan.take_right, .Back);
+            }
+        }
+        return plan.take_left + plan.take_right;
+    }
+
+    fn repairAfterDelete(self: *TextBuffer, left: *Node, right: *Node) error{OutOfMemory}!void {
+        try self.repairUpward(left);
+        if (left != right) try self.repairUpward(right);
+        try self.tryCollapseRoot();
+    }
+
+    fn repairUpward(self: *TextBuffer, start: *Node) error{OutOfMemory}!void {
+        var cur: ?*Node = start;
+        while (cur) |node| {
+            if (node.parent == null) return;
+            // make next decisions based on how many children this node has
+            const count = nodeCount(node);
+            const min = nodeMin(node);
+            if (count == 0) {
+                const parent = node.parent.?;
+                self.infanticide(parent, node);
+                cur = parent;
+            } else if (count < min) {
+                // the node has less than the minimum amount of children...
+                const demand = min - count;
+                const siblings = getSiblings(node);
+                // attempt to merge with neighbors
+                if (siblings.l) |left| {
+                    if (try self.mergeWithSibling(node, left)) |parent| {
+                        cur = parent;
+                        continue;
+                    }
+                }
+                if (siblings.r) |right| {
+                    if (try self.mergeWithSibling(right, node)) |parent| {
+                        cur = parent;
+                        continue;
+                    }
+                }
+                // failing that, try and borrow children
+                const borrowed = try self.tryBorrow(node, siblings);
+                if (borrowed >= demand) {
+                    cur = node.parent;
+                    continue;
+                }
+            }
+            cur = node.parent;
+        }
+    }
+
+    fn tryCollapseRoot(self: *TextBuffer) error{OutOfMemory}!void {
+        // checks for cases where the root node is no longer needed and collapses if necessary
+        switch (self.root.children) {
+            .leaf => {},
+            .internal => |*children| {
+                if (children.items.len == 0) {
+                    // internal node with no children becomes a leaf
+                    const leaf = try initLeaf(self.alloc);
+                    freeNode(self.alloc, self.root);
+                    self.root = leaf;
+                } else if (children.items.len == 1) {
+                    // internal node with one child is replaced by that child
+                    const child = children.items[0];
+                    child.parent = null;
+                    freeNode(self.alloc, self.root);
+                    self.root = child;
+                }
+            },
+        }
+    }
+
+    fn infanticide(self: *TextBuffer, parent: *Node, child: *Node) void {
+        // metal
+        const siblings = childList(parent);
+        const idx = indexOfChild(siblings.items, child);
+        _ = siblings.orderedRemove(idx);
+        freeTree(self.alloc, child);
+    }
+
+    fn mergeWithSibling(self: *TextBuffer, src: *Node, dst: *Node) error{OutOfMemory}!?*Node {
+        if (nodeCount(src) + nodeCount(dst) > nodeMax(dst)) return null;
+        try self.transferRangeBetweenSiblings(src, dst, 0, nodeCount(src), .Back);
+        const parent = src.parent.?;
+        self.infanticide(parent, src);
+        return parent;
+    }
+
+    // -------------------- LINE COUNT HELPERS --------------------
+
+    fn countLinesInPiece(self: *TextBuffer, p: *Piece) error{OutOfMemory}!usize {
+        // count all newlines in a piece
+        switch (p.buf()) {
+            .Original => return self.o_idx.countRange(self.alloc, self.original, p.off, p.len()),
+            .Add => return self.a_idx.countRange(self.alloc, self.add.items, p.off, p.len()),
+        }
+    }
+
+    fn countLinesInPieceRange(self: *TextBuffer, p: *Piece, offset: usize, len: usize) error{OutOfMemory}!usize {
+        // count newlines within some subset of a piece's bytes
+        switch (p.buf()) {
+            .Original => return self.o_idx.countRange(self.alloc, self.original, p.off + offset, len),
+            .Add => return self.a_idx.countRange(self.alloc, self.add.items, p.off + offset, len),
+        }
+    }
+
+    const MoveResult = struct { bytes: usize, lines: usize };
+
+    fn countMovedPieces(self: *TextBuffer, to_move: []Piece) error{OutOfMemory}!MoveResult {
+        var moved_bytes: usize = 0;
+        var moved_lines: usize = 0;
+        for (to_move) |*piece| {
+            moved_bytes += piece.len();
+            moved_lines += try self.countLinesInPiece(piece);
+        }
+        return .{ .bytes = moved_bytes, .lines = moved_lines };
+    }
+
+    fn countMovedNodes(to_move: []*Node) MoveResult {
+        var moved_bytes: usize = 0;
+        var moved_lines: usize = 0;
+        for (to_move) |node| {
+            moved_bytes += node.weight_bytes;
+            moved_lines += node.weight_lines;
+        }
+        return .{ .bytes = moved_bytes, .lines = moved_lines };
+    }
+
+    fn findNthNewlineInPiece(self: *TextBuffer, p: *const Piece, n: usize) usize {
+        // return byte offset within a piece of the n-th newline
+        const src = switch (p.buf()) {
+            .Original => self.original,
+            .Add      => self.add.items,
+        };
+        const slice = src[p.off..p.off + p.len()];
+        var i: usize = 0;
+        var seen: usize = 0;
+        while (i < slice.len) : (i += 1) {
+            if (slice[i] == '\n') {
+                seen += 1;
+                if (seen == n) return i;
+            }
+        }
+        @panic("not enough newlines in piece");
+    }
+};
+
+// -------------------- PIECE DATA TYPE --------------------
 
 const Buffer = enum { Original, Add };
 
@@ -74,8 +642,7 @@ const Piece = struct {
     }
 };
 
-// -------------------- ROPE IMPLEMENTATION --------------------
-// Underlying tree for the piece table
+// -------------------- TREE (ROPE) IMPLEMENTATION --------------------
 
 const MAX_BRANCH = 128;
 const MIN_BRANCH = 8;
@@ -84,7 +651,6 @@ const MIN_PIECES = 8;
 const MAX_ITER = 1_000;
 
 const Node = struct {
-    // The "table" in piece table is actually a rope implemented as a b-tree.
     // This allows for O(log n) searching, insertion, and deletion anywhere
     parent: ?*Node = null,
     weight_bytes: usize = 0,
@@ -554,579 +1120,5 @@ pub const SliceIter = struct {
             self.piece_offset = 0;
         }
         return slice;
-    }
-};
-
-// -------------------- PIECE TABLE IMPLEMENTATION --------------------
-// Actual text buffer implementation, this is the public interface
-
-pub const TextBuffer = struct {
-    // piece table collection object.
-    // holds a pointer to the original document as well as a working append-only buffer.
-    // holds a collection of ordered "pieces" which describe how to build a final document using the two buffers.
-    original: []const u8,
-    add: std.ArrayList(u8),
-    o_idx: NewLineIndex,
-    a_idx: NewLineIndex,
-    root: *Node,
-    doc_len: usize,
-    alloc: std.mem.Allocator,
-
-    pub fn init(alloc: std.mem.Allocator, original: []const u8) error{ OutOfMemory, FileTooBig }!TextBuffer {
-        // enforce the assertion about maximum file sizes even in release modes.
-        const limit = @as(usize, 1) << (@bitSizeOf(usize) - 1);
-        if (original.len >= limit) return error.FileTooBig;
-        // initialize the root of the tree
-        const leaf = try initLeaf(alloc);
-        if (original.len > 0) {
-            try leafPieces(leaf).append(alloc, Piece.init(.Original, original.len, 0));
-            leaf.weight_bytes = original.len;
-        }
-        var engine = TextBuffer{
-            .original = original,
-            .add = .empty,
-            .o_idx = NewLineIndex.init(),
-            .a_idx = NewLineIndex.init(),
-            .root = leaf,
-            .doc_len = original.len,
-            .alloc = alloc,
-        };
-        if (original.len > 0) leaf.weight_lines = try engine.o_idx.countRange(alloc, original, 0, original.len);
-        return engine;
-    }
-
-    pub fn deinit(self: *TextBuffer) void {
-        self.add.deinit(self.alloc);
-        self.o_idx.deinit(self.alloc);
-        self.a_idx.deinit(self.alloc);
-        freeTree(self.alloc, self.root);
-    }
-
-    pub fn insert(self: *TextBuffer, at: usize, text: []const u8) error{OutOfMemory}!void {
-        debug.dassert(at <= self.doc_len, "cannot insert outside of the document.");
-        debug.dassert(text.len > 0, "cannot insert empty text");
-        const add_offset = self.add.items.len;
-        try self.add.appendSlice(self.alloc, text);
-        // count how many newlines just got added
-        const newlines = try self.a_idx.countRange(self.alloc, self.add.items, add_offset, text.len);
-        // find the leaf node that corresponds to the insertion index
-        const found = findAt(self.root, at);
-        const leaf = found.leaf;
-        const pieces = leafPieces(leaf);
-        // under the ideal case, new edits are appended to the end and extend an existing piece
-        if (fastAppendIfPossible(leaf, add_offset, text.len, at, self.doc_len)) {
-            bubbleByteDelta(leaf, text.len, false);
-            bubbleLineDelta(leaf, newlines, false);
-            self.doc_len += text.len;
-            return;
-        }
-        const loc = locateInLeaf(leaf, found.offset);
-        const idx = try spliceIntoLeaf(pieces, self.alloc, loc, add_offset, text.len);
-        mergeAround(leaf, idx);
-        bubbleByteDelta(leaf, text.len, false);
-        bubbleLineDelta(leaf, newlines, false);
-        try self.bubbleOverflowUp(leaf);
-        self.doc_len += text.len;
-    }
-
-    pub fn delete(self: *TextBuffer, at: usize, len: usize) error{OutOfMemory}!void {
-        debug.dassert(at + len <= self.doc_len, "cannot delete outside of document");
-        debug.dassert(len > 0, "cannot delete empty span");
-        var remaining = len;
-        const found = findAt(self.root, at);
-        var leaf = found.leaf;
-        var offset = found.offset;
-        const left: *Node = leaf;
-        while (remaining > 0) {
-            const in_leaf = locateInLeaf(leaf, offset);
-            const removed = try self.deleteFromLeaf(leaf, in_leaf, remaining);
-            bubbleByteDelta(leaf, removed.bytes, true);
-            bubbleLineDelta(leaf, removed.lines, true);
-            remaining -= removed.bytes;
-            offset = 0;
-            const next_leaf = nextLeaf(leaf);
-            if (remaining > 0) {
-                debug.dassert(next_leaf != null, "reached rightmost leaf with non-empty deletion queue");
-                leaf = next_leaf.?;
-            }
-        }
-        try self.repairAfterDelete(left, leaf);
-        self.doc_len -= len;
-    }
-
-    pub fn lineOfByte(self: *TextBuffer, at: usize) error{OutOfMemory}!usize {
-        // map any index in the working document to a line number
-        debug.dassert(at <= self.doc_len, "offset out of range");
-        if (at == self.doc_len) return self.root.weight_lines;
-        var node = self.root;
-        var offset = at;
-        var lines_before: usize = 0;
-        var iter: usize = 0;
-        while (iter < MAX_ITER) : (iter += 1) {
-            switch (node.children) {
-                .leaf => {
-                    // count newlines in all full pieces before the offset
-                    const pieces = leafPiecesConst(node).items;
-                    var acc: usize = 0;
-                    var i: usize = 0;
-                    while (i < pieces.len and acc + pieces[i].len() <= offset) : (i += 1) {
-                        lines_before += try self.countLinesInPiece(&pieces[i]);
-                        acc          += pieces[i].len();
-                    }
-                    debug.dassert(i < pieces.len, "failed to find line");
-                    // add newlines inside the piece up to our offset
-                    lines_before += try self.countLinesInPieceRange(&pieces[i], 0, offset - acc);
-                    return lines_before;
-                },
-                .internal => |*children| {
-                    var i: usize = 0;
-                    while (i < children.items.len) : (i += 1) {
-                        const child = children.items[i];
-                        if (offset < child.weight_bytes) { node = child; break; }
-                        offset       -= child.weight_bytes;
-                        lines_before += child.weight_lines;
-                    }
-                    debug.dassert(i < children.items.len, "failed to find line");
-                },
-            }
-        }
-        @panic("max iterations reached without finding index in document");
-    }
-
-    pub fn byteOfLine(self: *TextBuffer, line: usize) error{OutOfMemory}!usize {
-        // map any line number to an index in the working document
-        debug.dassert(line <= self.root.weight_lines, "line out of range");
-        var node = self.root;
-        var remaining = line;
-        var offset: usize = 0;
-        var iter: usize = 0;
-        while (iter < MAX_ITER) : (iter += 1) {
-            switch (node.children) {
-                .leaf => {
-                    const pieces = leafPiecesConst(node).items;
-                    var acc: usize = 0;
-                    var i: usize = 0;
-                    while (i < pieces.len and remaining > 0) : (i += 1) {
-                        const piece = &pieces[i];
-                        const lines_in_piece = try self.countLinesInPiece(piece);
-                        if (remaining <= lines_in_piece) {
-                            return offset + acc + self.findNthNewlineInPiece(piece, remaining) + 1;
-                        } else {
-                            remaining -= lines_in_piece;
-                            acc       += piece.len();
-                        }
-                    }
-                    // edge case, newline at the very end of the piece
-                    return offset + acc;
-                },
-                .internal => |*children| {
-                    var i: usize = 0;
-                    while (i < children.items.len) : (i += 1) {
-                        const child = children.items[i];
-                        if (remaining <= child.weight_lines) { node = child; break; }
-                        remaining -= child.weight_lines;
-                        offset    += child.weight_bytes;
-                    }
-                    debug.dassert(i < children.items.len, "failed to find line");
-                }
-            }
-        }
-        @panic("max iterations reached without finding line in document");
-    }
-
-    pub fn peek(self: *TextBuffer, at: usize) u8 {
-        debug.dassert(at < self.doc_len, "can't peek outside of document");
-        const found = findAt(self.root, at);
-        const loc = locateInLeaf(found.leaf, found.offset);
-        const piece = leafPiecesConst(found.leaf).items[loc.piece_idx];
-        const idx = piece.off + loc.offset;
-        switch (piece.buf()) {
-            .Original => return self.original[idx],
-            .Add      => return self.add.items[idx],
-        }
-    }
-
-    pub fn getSliceIter(self: *TextBuffer, start: usize, len: usize) SliceIter {
-        debug.dassert(start + len <= self.doc_len, "view out of bounds");
-        debug.dassert(len > 0, "cannot provide an empty view");
-        return SliceIter.init(self, start, len);
-    }
-
-    pub fn materializeRange(self: *TextBuffer, w: anytype, start: usize, len: usize) @TypeOf(w).Error!void {
-        // when a view should be written directly to a writer
-        if (len == 0) return;
-        var it = self.getSliceIter(start, len);
-        while (it.next()) |slice| try w.writeAll(slice);
-    }
-
-    pub fn materialize(self: *TextBuffer, w: anytype) @TypeOf(w).Error!void {
-        // when the entire document should be written directly to a writer (e.g. saving)
-        try self.materializeRange(w, 0, self.doc_len);
-    }
-
-    // -------------------- INSERT HELPERS --------------------
-
-    fn bubbleOverflowUp(self: *TextBuffer, start: *Node) error{OutOfMemory}!void {
-        // It's possible that a node split overflows it's parent, which splits and overflows IT'S parent...
-        // Thus the logic needs to "bubble up" from the bottom of the tree until splits stop happening
-        var cur: ?*Node = start;
-        while (cur) |n| {
-            const parent = try self.splitNodeIfOverflow(n);
-            if (parent == null) return;
-            cur = parent;
-        }
-    }
-
-    fn splitNodeIfOverflow(self: *TextBuffer, node: *Node) error{OutOfMemory}!?*Node {
-        // this function will look at ANY node and perform the following logic:
-        //  1. if this node has less than the maximum number of children, do nothing
-        //  2. if it DOES have less than the max, split it in half into a new node
-        //  3. if it has a parent, it adds the new node as a sibling AND RETURNS IT
-        //  4. if it doesn't have a parent, it creates a new internal node as root
-        // if this function returns a non-null value, then parents must also be checked for overflow.
-        // is agnostic to leaf/internal nodes, but the implementations are fairly different.
-        switch (node.children) {
-            .leaf => |*pieces| {
-                if (pieces.items.len <= MAX_PIECES) return null;
-                // split half of the pieces into a new sibling
-                const mid = pieces.items.len / 2;
-                const right = try initLeaf(self.alloc);
-                // calculate exactly how many bytes and lines are moving
-                const to_move = pieces.items[mid..];
-                const moved = try self.countMovedPieces(to_move);
-                // move them
-                try leafPieces(right).appendSlice(self.alloc, to_move);
-                pieces.shrinkRetainingCapacity(mid);
-                // manually adjust node weights, faster than a full recompute
-                debug.dassert(node.weight_bytes >= moved.bytes, "leaf split byte size underflow");
-                debug.dassert(node.weight_lines >= moved.lines, "leaf split line size underflow");
-                node.weight_bytes -= moved.bytes;
-                node.weight_lines -= moved.lines;
-                right.weight_bytes = moved.bytes;
-                right.weight_lines = moved.lines;
-                // add the newly split node into the tree
-                return self.spliceNodeInTree(node, right);
-            },
-            .internal => |*children| {
-                // same as leaf case above, but just different enough to not be one function call
-                if (children.items.len <= MAX_BRANCH) return null;
-                const mid = children.items.len / 2;
-                const right = try initInternal(self.alloc);
-                const to_move = children.items[mid..];
-                const moved = countMovedNodes(to_move);
-                try childList(right).appendSlice(self.alloc, to_move);
-                children.shrinkRetainingCapacity(mid);
-                // fix parent pointers
-                for (childList(right).items) |child| child.parent = right;
-                debug.dassert(node.weight_bytes >= moved.bytes, "node split byte size underflow");
-                debug.dassert(node.weight_lines >= moved.lines, "node split line size underflow");
-                node.weight_bytes -= moved.bytes;
-                node.weight_lines -= moved.lines;
-                right.weight_bytes = moved.bytes;
-                right.weight_lines = moved.lines;
-                return self.spliceNodeInTree(node, right);
-            },
-        }
-    }
-
-    fn spliceNodeInTree(self: *TextBuffer, old: *Node, new: *Node) error{OutOfMemory}!?*Node {
-        // general case, add the new node one to the right of the old
-        if (old.parent) |parent| {
-            const siblings = childList(parent);
-            const idx = indexOfChild(siblings.items, old);
-            try siblings.insert(self.alloc, idx + 1, new);
-            new.parent = parent;
-            return parent;
-            // edge case, old node was the root, create a new root and create both as siblings
-        } else {
-            const root = try initInternal(self.alloc);
-            try childList(root).append(self.alloc, old);
-            try childList(root).append(self.alloc, new);
-            old.parent = root;
-            new.parent = root;
-            root.weight_bytes = old.weight_bytes + new.weight_bytes;
-            root.weight_lines = old.weight_lines + new.weight_lines;
-            self.root = root;
-            return null;
-        }
-    }
-
-    // -------------------- DELETE HELPERS --------------------
-
-    const DeleteResult = struct { bytes: usize, lines: usize };
-
-    fn deleteFromLeaf(self: *TextBuffer, leaf: *Node, start: InLeaf, max_remove: usize) error{OutOfMemory}!DeleteResult {
-        // attempt to delete at most max_remove bytes from the current leaf.
-        // return the total number that could be deleted, deletion may go into another node.
-        var pieces = leafPieces(leaf);
-        var removed_bytes: usize = 0;
-        var removed_lines: usize = 0;
-        var piece_idx = start.piece_idx;
-        const prefix_len = start.offset;
-        if (piece_idx >= pieces.items.len) return .{ .bytes = 0, .lines = 0 };
-        // handle the current (first) piece
-        var piece = &pieces.items[piece_idx];
-        var take = @min(max_remove, piece.len() - prefix_len);
-        // if we can't just delete the entire thing
-        if (prefix_len > 0 or take < piece.len()) {
-            removed_lines += try self.countLinesInPieceRange(piece, prefix_len, take);
-            const suffix_len = piece.len() - prefix_len - take;
-            // delete lands in the middle of the piece
-            if (prefix_len > 0 and suffix_len > 0) {
-                piece.setLen(prefix_len);
-                var suffix = piece.*;
-                suffix.off += prefix_len + take;
-                suffix.setLen(suffix_len);
-                try pieces.insert(self.alloc, piece_idx + 1, suffix);
-                piece_idx += 1;
-                // there is no suffix, trim the front
-            } else if (prefix_len > 0) {
-                piece.setLen(prefix_len);
-                piece_idx += 1;
-            }
-            // there is no prefix, trim the tail
-            else {
-                piece.off += take;
-                piece.setLen(suffix_len);
-            }
-            removed_bytes += take;
-        }
-        // if applicable, remove entire middle pieces, coalesce into one big delete at the end
-        var end_range = piece_idx;
-        while (end_range < pieces.items.len and removed_bytes < max_remove) : (end_range += 1) {
-            piece = &pieces.items[end_range];
-            const can_take = @min(piece.len(), max_remove - removed_bytes);
-            if (can_take < piece.len()) break;
-            removed_bytes += piece.len();
-            removed_lines += try self.countLinesInPiece(piece);
-        }
-        if (end_range > piece_idx) utils.orderedRemoveRange(Piece, pieces, piece_idx, end_range - piece_idx);
-        // we may still need to remove the front of one final piece
-        if (piece_idx < pieces.items.len and removed_bytes < max_remove) {
-            piece = &pieces.items[piece_idx];
-            take = max_remove - removed_bytes;
-            removed_lines += try self.countLinesInPieceRange(piece, 0, take);
-            piece.off += take;
-            piece.shrinkBy(take);
-            removed_bytes += take;
-        }
-        // if there are still pieces left, perform a local coalesce before returning
-        const removed = DeleteResult{ .bytes = removed_bytes, .lines = removed_lines };
-        if (pieces.items.len == 0) return removed;
-        if (piece_idx == pieces.items.len) piece_idx -= 1;
-        mergeAround(leaf, piece_idx);
-        return removed;
-    }
-
-    fn transferRangeBetweenSiblings(self: *TextBuffer, src: *Node, dst: *Node, start: usize, count: usize, side: enum { Front, Back }) error{OutOfMemory}!void {
-        debug.dassert(count > 0, "cannot transfer 0 nodes between siblings");
-        debug.dassert(std.meta.activeTag(src.children) == std.meta.activeTag(dst.children), "source and destination must be the same type of node");
-        debug.dassert(start == 0 or start + count == nodeCount(src), "insertions must be contiguous with start or end of source");
-        switch (src.children) {
-            .leaf => {
-                const src_pieces = leafPieces(src);
-                const dst_pieces = leafPieces(dst);
-                debug.dassert(src_pieces.items.len >= count, "source must contain enough items to transfer");
-                debug.dassert(dst_pieces.items.len > 0, "destination must not start empty");
-                // calculate exactly how many bytes and lines are moving
-                const to_move = src_pieces.items[start .. start + count];
-                const moved = try self.countMovedPieces(to_move);
-                switch (side) {
-                    .Front => try dst_pieces.insertSlice(self.alloc, 0, to_move),
-                    .Back  => try dst_pieces.appendSlice(self.alloc, to_move),
-                }
-                _ = utils.orderedRemoveRange(Piece, src_pieces, start, count);
-                // check for new merge opportunities
-                const center: usize = switch (side) {
-                    .Front => count,
-                    .Back  => dst_pieces.items.len - count,
-                };
-                mergeAround(dst, center);
-                bubbleByteDelta(src, moved.bytes, true);
-                bubbleByteDelta(dst, moved.bytes, false);
-                bubbleLineDelta(src, moved.lines, true);
-                bubbleLineDelta(dst, moved.lines, false);
-            },
-            .internal => {
-                const src_children = childList(src);
-                const dst_children = childList(dst);
-                debug.dassert(src_children.items.len >= count, "source must contain enough items to transfer");
-                debug.dassert(dst_children.items.len > 0, "destination must not start empty");
-                // calculate exactly how many bytes and lines are moving
-                const to_move = src_children.items[start .. start + count];
-                const moved = countMovedNodes(to_move);
-                switch (side) {
-                    .Front => try dst_children.insertSlice(self.alloc, 0, to_move),
-                    .Back  => try dst_children.appendSlice(self.alloc, to_move),
-                }
-                _ = utils.orderedRemoveRange(*Node, src_children, start, count);
-                // fix parent pointers for moved children
-                const adopted = switch (side) {
-                    .Front => dst_children.items[0..count],
-                    .Back  => dst_children.items[dst_children.items.len - count ..],
-                };
-                for (adopted) |child| child.parent = dst;
-                bubbleByteDelta(src, moved.bytes, true);
-                bubbleByteDelta(dst, moved.bytes, false);
-                bubbleLineDelta(src, moved.lines, true);
-                bubbleLineDelta(dst, moved.lines, false);
-            },
-        }
-    }
-
-    fn tryBorrow(self: *TextBuffer, node: *Node, siblings: Siblings) error{OutOfMemory}!usize {
-        // uses a borrow plan to take exactly as many nodes from neighbors as can be spared
-        const plan = planBorrow(node, siblings);
-        if (siblings.l) |left| {
-            if (plan.take_left > 0) {
-                try self.transferRangeBetweenSiblings(left, node, nodeCount(left) - plan.take_left, plan.take_left, .Front);
-            }
-        }
-        if (siblings.r) |right| {
-            if (plan.take_right > 0) {
-                try self.transferRangeBetweenSiblings(right, node, 0, plan.take_right, .Back);
-            }
-        }
-        return plan.take_left + plan.take_right;
-    }
-
-    fn repairAfterDelete(self: *TextBuffer, left: *Node, right: *Node) error{OutOfMemory}!void {
-        try self.repairUpward(left);
-        if (left != right) try self.repairUpward(right);
-        try self.tryCollapseRoot();
-    }
-
-    fn repairUpward(self: *TextBuffer, start: *Node) error{OutOfMemory}!void {
-        var cur: ?*Node = start;
-        while (cur) |node| {
-            if (node.parent == null) return;
-            // make next decisions based on how many children this node has
-            const count = nodeCount(node);
-            const min = nodeMin(node);
-            if (count == 0) {
-                const parent = node.parent.?;
-                self.infanticide(parent, node);
-                cur = parent;
-            } else if (count < min) {
-                // the node has less than the minimum amount of children...
-                const demand = min - count;
-                const siblings = getSiblings(node);
-                // attempt to merge with neighbors
-                if (siblings.l) |left| {
-                    if (try self.mergeWithSibling(node, left)) |parent| {
-                        cur = parent;
-                        continue;
-                    }
-                }
-                if (siblings.r) |right| {
-                    if (try self.mergeWithSibling(right, node)) |parent| {
-                        cur = parent;
-                        continue;
-                    }
-                }
-                // failing that, try and borrow children
-                const borrowed = try self.tryBorrow(node, siblings);
-                if (borrowed >= demand) {
-                    cur = node.parent;
-                    continue;
-                }
-            }
-            cur = node.parent;
-        }
-    }
-
-    fn tryCollapseRoot(self: *TextBuffer) error{OutOfMemory}!void {
-        // checks for cases where the root node is no longer needed and collapses if necessary
-        switch (self.root.children) {
-            .leaf => {},
-            .internal => |*children| {
-                if (children.items.len == 0) {
-                    // internal node with no children becomes a leaf
-                    const leaf = try initLeaf(self.alloc);
-                    freeNode(self.alloc, self.root);
-                    self.root = leaf;
-                } else if (children.items.len == 1) {
-                    // internal node with one child is replaced by that child
-                    const child = children.items[0];
-                    child.parent = null;
-                    freeNode(self.alloc, self.root);
-                    self.root = child;
-                }
-            },
-        }
-    }
-
-    fn infanticide(self: *TextBuffer, parent: *Node, child: *Node) void {
-        // metal
-        const siblings = childList(parent);
-        const idx = indexOfChild(siblings.items, child);
-        _ = siblings.orderedRemove(idx);
-        freeTree(self.alloc, child);
-    }
-
-    fn mergeWithSibling(self: *TextBuffer, src: *Node, dst: *Node) error{OutOfMemory}!?*Node {
-        if (nodeCount(src) + nodeCount(dst) > nodeMax(dst)) return null;
-        try self.transferRangeBetweenSiblings(src, dst, 0, nodeCount(src), .Back);
-        const parent = src.parent.?;
-        self.infanticide(parent, src);
-        return parent;
-    }
-
-    // -------------------- LINE COUNT HELPERS --------------------
-
-    fn countLinesInPiece(self: *TextBuffer, p: *Piece) error{OutOfMemory}!usize {
-        // count all newlines in a piece
-        switch (p.buf()) {
-            .Original => return self.o_idx.countRange(self.alloc, self.original, p.off, p.len()),
-            .Add => return self.a_idx.countRange(self.alloc, self.add.items, p.off, p.len()),
-        }
-    }
-
-    fn countLinesInPieceRange(self: *TextBuffer, p: *Piece, offset: usize, len: usize) error{OutOfMemory}!usize {
-        // count newlines within some subset of a piece's bytes
-        switch (p.buf()) {
-            .Original => return self.o_idx.countRange(self.alloc, self.original, p.off + offset, len),
-            .Add => return self.a_idx.countRange(self.alloc, self.add.items, p.off + offset, len),
-        }
-    }
-
-    const MoveResult = struct { bytes: usize, lines: usize };
-
-    fn countMovedPieces(self: *TextBuffer, to_move: []Piece) error{OutOfMemory}!MoveResult {
-        var moved_bytes: usize = 0;
-        var moved_lines: usize = 0;
-        for (to_move) |*piece| {
-            moved_bytes += piece.len();
-            moved_lines += try self.countLinesInPiece(piece);
-        }
-        return .{ .bytes = moved_bytes, .lines = moved_lines };
-    }
-
-    fn countMovedNodes(to_move: []*Node) MoveResult {
-        var moved_bytes: usize = 0;
-        var moved_lines: usize = 0;
-        for (to_move) |node| {
-            moved_bytes += node.weight_bytes;
-            moved_lines += node.weight_lines;
-        }
-        return .{ .bytes = moved_bytes, .lines = moved_lines };
-    }
-
-    fn findNthNewlineInPiece(self: *TextBuffer, p: *const Piece, n: usize) usize {
-        // return byte offset within a piece of the n-th newline
-        const src = switch (p.buf()) {
-            .Original => self.original,
-            .Add      => self.add.items,
-        };
-        const slice = src[p.off..p.off + p.len()];
-        var i: usize = 0;
-        var seen: usize = 0;
-        while (i < slice.len) : (i += 1) {
-            if (slice[i] == '\n') {
-                seen += 1;
-                if (seen == n) return i;
-            }
-        }
-        @panic("not enough newlines in piece");
     }
 };
