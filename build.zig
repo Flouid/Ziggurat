@@ -32,15 +32,15 @@ pub fn build(b: *std.Build) void {
 }
 
 const CoreModules = struct {
-    debug:   *std.Build.Module,
-    utils:   *std.Build.Module,
-    ref_buf: *std.Build.Module,
-    buffer:  *std.Build.Module,
-    types:   *std.Build.Module,
-    document:*std.Build.Module,
-    viewport:*std.Build.Module,
-    layout:  *std.Build.Module,
-    renderer:*std.Build.Module,
+    debug:    *std.Build.Module,
+    utils:    *std.Build.Module,
+    ref_buf:  *std.Build.Module,
+    buffer:   *std.Build.Module,
+    types:    *std.Build.Module,
+    document: *std.Build.Module,
+    viewport: *std.Build.Module,
+    layout:   *std.Build.Module,
+    renderer: *std.Build.Module,
 };
 
 fn addCoreModules(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) CoreModules {
