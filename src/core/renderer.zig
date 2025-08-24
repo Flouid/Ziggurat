@@ -9,44 +9,6 @@ const sdtx = sokol.debugtext;
 const sgl = sokol.gl;
 const sglue = sokol.glue;
 
-pub const Theme = struct { 
-    // colors stored as packed 32-bit integers in RGBA order
-    // for example, 0xRRGGBBAA
-    background: u32,
-    foreground: u32,
-    caret: u32,
-    // number of TEXT CELLS to pad x and y around the borders
-    pad_x: f32,
-    pad_y: f32,
-};
-
-const SdtxWriter = struct {
-    // this will be passed as the writer into the document and text buffer.
-    // Loosely mirrors the Io.Writer interface, but I'm too smooth brained to figure that out
-    buffer: []u8,
-    end: usize = 0,
-
-    pub fn writeAll(self: *SdtxWriter, bytes: []const u8) !void {
-        // write into a private buffer, accumulate any number of writes as long as they fit in one line
-        if (bytes.len == 0) return;
-        debug.dassert(self.end + bytes.len < self.buffer.len, "attempt to write past the end of line buffer");
-        @memcpy(self.buffer[self.end..self.end + bytes.len], bytes);
-        self.end += bytes.len;
-    }
-
-    pub fn flush(self: *SdtxWriter) void {
-        // null terminate the string and write it using sokol's standard debug
-        if (self.buffer.len != 0) self.buffer[self.end] = 0;
-        const s: [:0]const u8 = self.buffer[0..self.end :0];
-        sdtx.putr(s, @as(i32, @intCast(self.end)));
-        self.end = 0;
-    }
-};
-
-const Dimensions = struct {
-    x: f32,
-    y: f32,
-};
 
 pub const Renderer = struct {
     theme: Theme,
@@ -129,6 +91,45 @@ pub const Renderer = struct {
             sgl.draw();
         }
     }
+};
+
+pub const Theme = struct { 
+    // colors stored as packed 32-bit integers in RGBA order
+    // for example, 0xRRGGBBAA
+    background: u32,
+    foreground: u32,
+    caret: u32,
+    // number of TEXT CELLS to pad x and y around the borders
+    pad_x: f32,
+    pad_y: f32,
+};
+
+const SdtxWriter = struct {
+    // this will be passed as the writer into the document and text buffer.
+    // Loosely mirrors the Io.Writer interface, but I'm too smooth brained to figure that out
+    buffer: []u8,
+    end: usize = 0,
+
+    pub fn writeAll(self: *SdtxWriter, bytes: []const u8) !void {
+        // write into a private buffer, accumulate any number of writes as long as they fit in one line
+        if (bytes.len == 0) return;
+        debug.dassert(self.end + bytes.len < self.buffer.len, "attempt to write past the end of line buffer");
+        @memcpy(self.buffer[self.end..self.end + bytes.len], bytes);
+        self.end += bytes.len;
+    }
+
+    pub fn flush(self: *SdtxWriter) void {
+        // null terminate the string and write it using sokol's standard debug
+        if (self.buffer.len != 0) self.buffer[self.end] = 0;
+        const s: [:0]const u8 = self.buffer[0..self.end :0];
+        sdtx.putr(s, @as(i32, @intCast(self.end)));
+        self.end = 0;
+    }
+};
+
+const Dimensions = struct {
+    x: f32,
+    y: f32,
 };
 
 fn rgbaToAbgr(rgba: u32) u32 {
