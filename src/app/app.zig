@@ -5,6 +5,7 @@ const Viewport  = @import("viewport").Viewport;
 const LayoutMod = @import("layout");
 const Renderer  = @import("renderer").Renderer;
 const Theme     = @import("renderer").Theme;
+const file_io = @import("file_io");
 
 const CELL_PX: f32 = 8.0;
 
@@ -16,12 +17,17 @@ const App = struct {
     doc: Document = undefined,
     vp: Viewport = undefined,
     renderer: Renderer = undefined,
+    path_in: ?[]const u8 = null,
 
     fn init(self: *App) !void {
         const gpa = self.gpa.allocator();
         // initialize document
-        const bytes = try std.fs.cwd().readFileAlloc(gpa, HARD_CODED_PATH, std.math.maxInt(usize));
-        self.doc = try Document.init(gpa, bytes);
+        if (self.path_in) |p| {
+            const bytes = try file_io.read(gpa, p);
+            self.doc = try Document.init(gpa, bytes);
+        } else {
+            self.doc = try Document.init(gpa, "");
+        }
         // initialize viewport
         const pad = .{ .x = 1.0, .y = 1.0 };
         const dims = windowCells(pad.x, pad.y);
@@ -107,7 +113,8 @@ fn event_cb(ev: [*c]const sapp.Event) callconv(.c) void {
     _ = ev;
 }
 
-pub fn main() !void {
+pub fn run(path: ?[]const u8) !void {
+    if (path) |p| G.path_in = p;
     sapp.run(.{
         .width = 1024,
         .height = 764,

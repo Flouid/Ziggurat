@@ -41,6 +41,8 @@ const CoreModules = struct {
     viewport: *std.Build.Module,
     layout:   *std.Build.Module,
     renderer: *std.Build.Module,
+    file_io:  *std.Build.Module,
+    app:      *std.Build.Module,
 };
 
 fn addCoreModules(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) CoreModules {
@@ -130,16 +132,38 @@ fn addCoreModules(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std
         },
     });
 
+    const file_io_mod = b.addModule("file_io", .{
+        .root_source_file = b.path("src/core/file_io.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const app_mod = b.addModule("app", .{
+        .root_source_file = b.path("src/app/app.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "sokol",    .module = dep_sokol.module("sokol") },
+            .{ .name = "document", .module = doc_mod },
+            .{ .name = "viewport", .module = viewport_mod },
+            .{ .name = "layout",   .module = layout_mod },
+            .{ .name = "renderer", .module = renderer_mod },
+            .{ .name = "file_io", .module = file_io_mod },
+        },
+    });
+
     return .{
-        .debug   = debug_mod,
-        .utils   = utils_mod,
-        .ref_buf = ref_buffer_mod,
-        .buffer  = buffer_mod,
-        .types   = types_mod,
-        .document= doc_mod,
-        .viewport= viewport_mod,
-        .layout  = layout_mod,
-        .renderer= renderer_mod,
+        .debug    = debug_mod,
+        .utils    = utils_mod,
+        .ref_buf  = ref_buffer_mod,
+        .buffer   = buffer_mod,
+        .types    = types_mod,
+        .document = doc_mod,
+        .viewport = viewport_mod,
+        .layout   = layout_mod,
+        .renderer = renderer_mod,
+        .file_io  = file_io_mod,
+        .app      = app_mod,
     };
 }
 
@@ -162,20 +186,17 @@ fn addApps(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
     });
     b.installArtifact(test_engine);
 
-    const app = b.addExecutable(.{
+    const main = b.addExecutable(.{
         .name = "Ziggurat",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/app.zig"),
+            .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "sokol",    .module = b.dependency("sokol", .{ .target = target, .optimize = optimize }).module("sokol") },
-                .{ .name = "document", .module = mods.document },
-                .{ .name = "viewport", .module = mods.viewport },
-                .{ .name = "layout",   .module = mods.layout },
-                .{ .name = "renderer", .module = mods.renderer },
+                .{ .name = "app",    .module = mods.app },
+                .{ .name = "utils", .module = mods.utils },
             },
         }),
     });
-    b.installArtifact(app);
+    b.installArtifact(main);
 }
