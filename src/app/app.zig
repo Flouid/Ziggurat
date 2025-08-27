@@ -76,6 +76,17 @@ const App = struct {
         try self.renderer.draw(&self.doc, &layout);
         self.renderer.endFrame();
     }
+
+    fn save(self: *App) !void {
+        if (self.path_in) |p| {
+            const a = self.gpa.allocator();
+            const buf = try a.alloc(u8, self.doc.size());
+            defer a.free(buf);
+            var w: std.Io.Writer = .fixed(buf);
+            try self.doc.materialize(&w);
+            try file_io.write(p, buf);
+        } else std.log.err("cannot save unnamed document\n", .{});
+    }
 };
 
 fn windowCells(pad_x: f32, pad_y: f32) struct { w: usize, h: usize} {
@@ -113,10 +124,18 @@ fn cleanup_cb() callconv(.c) void {
 }
 
 fn event_cb(ev: [*c]const sapp.Event) callconv(.c) void {
-    G.controller.onEvent(ev) catch |e| {
-        std.log.err("failure processing input: {s}\n", .{ @errorName(e) });
-        sapp.requestQuit();
+    const command = G.controller.onEvent(ev) catch |e| blk: {
+        std.log.err("unrecognized command from controller: {s}\n", .{ @errorName(e) });
+        break :blk .exit;
     };
+    if (command) |c| {
+        switch(c) {
+            .save => G.save() catch |e| { 
+                std.log.err("failed to save document: {s}\n", .{ @errorName(e) }); 
+            },
+            .exit => sapp.requestQuit(),
+        }
+    }
 }
 
 pub fn run(path: ?[]const u8) !void {
