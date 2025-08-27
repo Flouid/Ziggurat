@@ -32,17 +32,18 @@ pub fn build(b: *std.Build) void {
 }
 
 const CoreModules = struct {
-    debug:    *std.Build.Module,
-    utils:    *std.Build.Module,
-    ref_buf:  *std.Build.Module,
-    buffer:   *std.Build.Module,
-    types:    *std.Build.Module,
-    document: *std.Build.Module,
-    viewport: *std.Build.Module,
-    layout:   *std.Build.Module,
-    renderer: *std.Build.Module,
-    file_io:  *std.Build.Module,
-    app:      *std.Build.Module,
+    debug:      *std.Build.Module,
+    utils:      *std.Build.Module,
+    ref_buf:    *std.Build.Module,
+    buffer:     *std.Build.Module,
+    types:      *std.Build.Module,
+    document:   *std.Build.Module,
+    viewport:   *std.Build.Module,
+    layout:     *std.Build.Module,
+    renderer:   *std.Build.Module,
+    file_io:    *std.Build.Module,
+    controller: *std.Build.Module,
+    app:        *std.Build.Module,
 };
 
 fn addCoreModules(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) CoreModules {
@@ -56,7 +57,9 @@ fn addCoreModules(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std
         .root_source_file = b.path("src/utils/utils.zig"),
         .target = target,
         .optimize = optimize,
-        .imports = &.{ .{ .name = "debug", .module = debug_mod } },
+        .imports = &.{ 
+            .{ .name = "debug", .module = debug_mod } 
+        },
     });
 
     const ref_buffer_mod = b.addModule("ref_buffer", .{
@@ -90,10 +93,10 @@ fn addCoreModules(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std
         .target = target,
         .optimize = optimize,
         .imports = &.{
-            .{ .name = "debug", .module = debug_mod },
-            .{ .name = "utils", .module = utils_mod },
+            .{ .name = "debug",  .module = debug_mod },
+            .{ .name = "utils",  .module = utils_mod },
             .{ .name = "buffer", .module = buffer_mod },
-            .{ .name = "types", .module = types_mod },
+            .{ .name = "types",  .module = types_mod },
         },
     });
 
@@ -111,7 +114,7 @@ fn addCoreModules(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std
         .imports = &.{
             .{ .name = "document", .module = doc_mod },
             .{ .name = "viewport", .module = viewport_mod },
-            .{ .name = "types", .module = types_mod },
+            .{ .name = "types",    .module = types_mod },
         },
     });
 
@@ -125,10 +128,10 @@ fn addCoreModules(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std
         .target = target,
         .optimize = optimize,
         .imports = &.{
-            .{ .name = "debug", .module = debug_mod },
-            .{ .name = "sokol", .module = dep_sokol.module("sokol") },
+            .{ .name = "debug",    .module = debug_mod },
+            .{ .name = "sokol",    .module = dep_sokol.module("sokol") },
             .{ .name = "document", .module = doc_mod },
-            .{ .name = "layout", .module = layout_mod },
+            .{ .name = "layout",   .module = layout_mod },
         },
     });
 
@@ -136,6 +139,17 @@ fn addCoreModules(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std
         .root_source_file = b.path("src/core/file_io.zig"),
         .target = target,
         .optimize = optimize,
+    });
+
+    const controller_mod = b.addModule("controller", .{
+        .root_source_file = b.path("src/core/controller.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "sokol",    .module = dep_sokol.module("sokol") },
+            .{ .name = "document", .module = doc_mod },
+            .{ .name = "viewport", .module = viewport_mod },
+        },
     });
 
     const app_mod = b.addModule("app", .{
@@ -148,22 +162,24 @@ fn addCoreModules(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std
             .{ .name = "viewport", .module = viewport_mod },
             .{ .name = "layout",   .module = layout_mod },
             .{ .name = "renderer", .module = renderer_mod },
-            .{ .name = "file_io", .module = file_io_mod },
+            .{ .name = "file_io",  .module = file_io_mod },
+            .{ .name = "controller",   .module = controller_mod},
         },
     });
 
     return .{
-        .debug    = debug_mod,
-        .utils    = utils_mod,
-        .ref_buf  = ref_buffer_mod,
-        .buffer   = buffer_mod,
-        .types    = types_mod,
-        .document = doc_mod,
-        .viewport = viewport_mod,
-        .layout   = layout_mod,
-        .renderer = renderer_mod,
-        .file_io  = file_io_mod,
-        .app      = app_mod,
+        .debug        = debug_mod,
+        .utils        = utils_mod,
+        .ref_buf      = ref_buffer_mod,
+        .buffer       = buffer_mod,
+        .types        = types_mod,
+        .document     = doc_mod,
+        .viewport     = viewport_mod,
+        .layout       = layout_mod,
+        .renderer     = renderer_mod,
+        .file_io      = file_io_mod,
+        .controller   = controller_mod,
+        .app          = app_mod,
     };
 }
 
@@ -177,10 +193,10 @@ fn addApps(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "debug", .module = mods.debug },
-                .{ .name = "utils", .module = mods.utils },
+                .{ .name = "debug",      .module = mods.debug },
+                .{ .name = "utils",      .module = mods.utils },
                 .{ .name = "ref_buffer", .module = mods.ref_buf },
-                .{ .name = "buffer", .module = mods.buffer },
+                .{ .name = "buffer",     .module = mods.buffer },
             },
         }),
     });
@@ -194,7 +210,7 @@ fn addApps(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "app",    .module = mods.app },
-                .{ .name = "utils", .module = mods.utils },
+                .{ .name = "utils",  .module = mods.utils },
             },
         }),
     });
