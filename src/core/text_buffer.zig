@@ -203,15 +203,13 @@ pub const TextBuffer = struct {
         try self.materializeRange(w, 0, self.doc_len);
     }
 
-    // -------------------- EVERYTHING BENEATH THIS LINE IS A PRIVATE IMPLEMENTATION DETAIL --------------------
-
-    // -------------------- ITERATION HELPERS --------------------
-
-    fn getSliceIter(self: *TextBuffer, start: usize, len: usize) SliceIter {
+    pub fn getSliceIter(self: *TextBuffer, start: usize, len: usize) SliceIter {
         debug.dassert(start + len <= self.doc_len, "view out of bounds");
         debug.dassert(len > 0, "cannot provide an empty view");
         return SliceIter.init(self, start, len);
     }
+
+    // -------------------- EVERYTHING BENEATH THIS LINE IS A PRIVATE IMPLEMENTATION DETAIL --------------------
 
     // -------------------- INSERT HELPERS --------------------
 

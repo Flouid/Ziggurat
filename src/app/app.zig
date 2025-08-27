@@ -1,29 +1,34 @@
-const std = @import("std");
-const sapp = @import("sokol").app;
-const Document  = @import("document").Document;
-const Viewport  = @import("viewport").Viewport;
-const LayoutMod = @import("layout");
-const Renderer  = @import("renderer").Renderer;
-const Theme     = @import("renderer").Theme;
+const std        = @import("std");
+const sapp       = @import("sokol").app;
+const file_io    = @import("file_io");
+const Document   = @import("document").Document;
+const Viewport   = @import("viewport").Viewport;
+const LayoutMod  = @import("layout");
+const Renderer   = @import("renderer").Renderer;
+const Theme      = @import("renderer").Theme;
+const Controller = @import("controller").Controller;
 
-const CELL_PX: f32 = 8.0;
-
-const HARD_CODED_PATH = "../../fixtures/example.txt";
 
 const App = struct {
     gpa: std.heap.GeneralPurposeAllocator(.{}),
     arena: std.heap.ArenaAllocator = undefined,
     doc: Document = undefined,
     vp: Viewport = undefined,
+    controller: Controller = undefined,
     renderer: Renderer = undefined,
+    path_in: ?[]const u8 = null,
 
     fn init(self: *App) !void {
         const gpa = self.gpa.allocator();
         // initialize document
-        const bytes = try std.fs.cwd().readFileAlloc(gpa, HARD_CODED_PATH, std.math.maxInt(usize));
-        self.doc = try Document.init(gpa, bytes);
+        if (self.path_in) |p| {
+            const bytes = try file_io.read(gpa, p);
+            self.doc = try Document.init(gpa, bytes);
+        } else {
+            self.doc = try Document.init(gpa, "");
+        }
         // initialize viewport
-        const pad = .{ .x = 1.0, .y = 1.0 };
+        const pad = .{ .x = 0.5, .y = 0.5 };
         const dims = windowCells(pad.x, pad.y);
         self.vp = .{
             .top_line = 0,
@@ -31,6 +36,8 @@ const App = struct {
             .height = dims.h,
             .width  = dims.h,
         };
+        // initialize controller
+        self.controller = .{ .doc = &self.doc, .vp = &self.vp };
         // initialize renderer
         self.renderer = Renderer.init(.{
             .background = 0x000000FF,
@@ -69,16 +76,27 @@ const App = struct {
         try self.renderer.draw(&self.doc, &layout);
         self.renderer.endFrame();
     }
+
+    fn save(self: *App) !void {
+        if (self.path_in) |p| {
+            const a = self.gpa.allocator();
+            const buf = try a.alloc(u8, self.doc.size());
+            defer a.free(buf);
+            var w: std.Io.Writer = .fixed(buf);
+            try self.doc.materialize(&w);
+            try file_io.write(p, buf);
+        } else std.log.err("cannot save unnamed document\n", .{});
+    }
 };
 
 fn windowCells(pad_x: f32, pad_y: f32) struct { w: usize, h: usize} {
     const w_px = @as(f32, @floatFromInt(sapp.width()));
     const h_px = @as(f32, @floatFromInt(sapp.height()));
+    const cell_px: f32 = 8.0;
     const avail_w = w_px - 2.0 * pad_x;
     const avail_h = h_px - 2.0 * pad_y;
-
-    const cols: usize = if (avail_w <= 0) 0 else @intFromFloat(@floor(avail_w / CELL_PX));
-    const rows: usize = if (avail_h <= 0) 0 else @intFromFloat(@floor(avail_h / CELL_PX));
+    const cols: usize = if (avail_w <= 0) 0 else @intFromFloat(@floor(avail_w / cell_px));
+    const rows: usize = if (avail_h <= 0) 0 else @intFromFloat(@floor(avail_h / cell_px));
     return .{ .w = cols, .h = rows };
 }
 
@@ -95,7 +113,10 @@ fn init_cb() callconv(.c) void {
 }
 
 fn frame_cb() callconv(.c) void {
-    G.frame() catch unreachable;
+    G.frame() catch |e| {
+        std.log.err("failure when rendering frame: {s}\n", .{ @errorName(e) });
+        sapp.requestQuit();
+    };
 }
 
 fn cleanup_cb() callconv(.c) void {
@@ -103,11 +124,22 @@ fn cleanup_cb() callconv(.c) void {
 }
 
 fn event_cb(ev: [*c]const sapp.Event) callconv(.c) void {
-    // v0 has no interaction :(
-    _ = ev;
+    const command = G.controller.onEvent(ev) catch |e| blk: {
+        std.log.err("unrecognized command from controller: {s}\n", .{ @errorName(e) });
+        break :blk .exit;
+    };
+    if (command) |c| {
+        switch(c) {
+            .save => G.save() catch |e| { 
+                std.log.err("failed to save document: {s}\n", .{ @errorName(e) }); 
+            },
+            .exit => sapp.requestQuit(),
+        }
+    }
 }
 
-pub fn main() !void {
+pub fn run(path: ?[]const u8) !void {
+    if (path) |p| G.path_in = p;
     sapp.run(.{
         .width = 1024,
         .height = 764,

@@ -64,7 +64,6 @@ pub fn bytesToHexAlloc(alloc: std.mem.Allocator, bytes: []const u8) ![]u8 {
 pub const RNG = struct {
     // wrapper for a specific pseudo-random number generator that provides results in a range.
     // Also generic for any unsigned integer type (as long as it's not bigger than u64).
-    // NOTE: this might break on 32bit targets...
     rng: std.Random.SplitMix64,
 
     pub fn init(seed: u64) RNG {
@@ -83,9 +82,12 @@ pub const RNG = struct {
 // -------------------- A SANE PRINT FUNCTION --------------------
 
 pub fn printf(comptime fmt: []const u8, args: anytype) !void {
+    // don't forget to flush
     var buf: [1024]u8 = undefined;
-    const s = try std.fmt.bufPrint(&buf, fmt, args);
-    try std.fs.File.stdout().writeAll(s);
+    var stdout_writer = std.fs.File.stdout().writer(&buf);
+    const stdout = &stdout_writer.interface;
+    try stdout.print(fmt, args);
+    try stdout.flush();
 }
 
 // -------------------- GENERIC HELPERS --------------------
