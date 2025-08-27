@@ -13,14 +13,21 @@ pub const Controller = struct {
             .KEY_DOWN => {
                 const key = ev.*.key_code;
                 switch (key) {
-                    .RIGHT => try self.doc.moveRight(),
-                    .LEFT  => try self.doc.moveLeft(),
-                    .DOWN  => try self.doc.moveDown(),
-                    .UP    => try self.doc.moveUp(),
-                    .HOME  => try self.doc.moveHome(),
-                    .END   => try self.doc.moveEnd(),
+                    .RIGHT     => try self.doc.moveRight(),
+                    .LEFT      => try self.doc.moveLeft(),
+                    .DOWN      => try self.doc.moveDown(),
+                    .UP        => try self.doc.moveUp(),
+                    .HOME      => try self.doc.moveHome(),
+                    .END       => try self.doc.moveEnd(),
+                    .BACKSPACE => try self.doc.caretBackspace(1),
+                    .ENTER     => try self.doc.caretInsert("\n"),
                     else => {},
                 }
+            },
+            .CHAR => {
+                var buf: [4]u8 = undefined;
+                const len = try std.unicode.utf8Encode(@intCast(ev.*.char_code), &buf);
+                try self.doc.caretInsert(buf[0..len]);
             },
             else => {},
         }
