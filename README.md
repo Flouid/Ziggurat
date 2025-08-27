@@ -24,7 +24,7 @@ Two programs:
 - Supports keyboard navigation with arrow keys + home/end
 - Supports generic typing + backspace
 - If launched with no command-line args, it opens an empty scratch document
-- If launched via CLI with `Ziggurat.exe <file_path>` it will open that text file for editing
+- If launched via CLI with `Ziggurat.exe <file_path>` it will open that text file for editing or create one
 - When working on a named file, `ctrl-s` saves and overwrites the opened file
 - `ctrl-d` exits
 - Dynamic resizing
@@ -35,7 +35,7 @@ Two programs:
 - No mouse support
 - No selection/highlight
 - No undo/redo
-- No file creation/renaming
+- No file renaming
 - Rendering pipeline not particularly performant yet, does choke on large files
 - No scaling or font support
 - No text wrapping

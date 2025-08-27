@@ -3,7 +3,12 @@ const std = @import("std");
 const MAX_FILE_SIZE = 1 << 31;  // 2 GiB
 
 pub fn read(alloc: std.mem.Allocator, path: []const u8) ![]u8 {
-    return try std.fs.cwd().readFileAlloc(alloc, path, MAX_FILE_SIZE);
+    var file = std.fs.cwd().openFile(path, .{}) catch |e| switch(e) {
+        error.FileNotFound => return try alloc.dupe(u8, ""),
+        else => return e,
+    };
+    defer file.close();
+    return try file.readToEndAlloc(alloc, MAX_FILE_SIZE);
 }
 
 pub fn write(path: []const u8, bytes: []const u8) !void {
