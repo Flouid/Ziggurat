@@ -12,17 +12,23 @@ const sglue = sokol.glue;
 
 pub const Renderer = struct {
     theme: Theme,
+    alloc: std.mem.Allocator,
+    line_buffer: []u8 = &[_]u8{},
 
-    pub fn init(theme: Theme) Renderer {
-        const renderer = Renderer{ .theme = theme };
+    pub fn init(alloc: std.mem.Allocator, theme: Theme) Renderer {
+        const renderer = Renderer{ .theme = theme, .alloc = alloc };
         sgfx.setup(.{ .environment = sglue.environment() });
-        sdtx.setup(.{ .fonts = .{ sdtx.fontKc853(), .{}, .{}, .{}, .{}, .{}, .{}, .{} } });
+        sdtx.setup(.{ 
+            .fonts = .{ sdtx.fontKc853(), .{}, .{}, .{}, .{}, .{}, .{}, .{} } ,
+            .context = .{ .char_buf_size = 1 << 16},
+        });
         sdtx.font(0);
         sgl.setup(.{});
         return renderer;
     }
 
-    pub fn deinit(_: *Renderer) void {
+    pub fn deinit(self: *Renderer) void {
+        if (self.line_buffer.len > 0) self.alloc.free(self.line_buffer);
         sgl.shutdown();
         sdtx.shutdown();
         sgfx.shutdown();
@@ -54,12 +60,11 @@ pub const Renderer = struct {
         sdtx.home();
         sdtx.color1i(rgbaToAbgr(self.theme.foreground)); // nasty RGBA vs ABGR footgun
         // allocate a per-frame line buffer, allows sentintel terminated strings
-        var a = std.heap.page_allocator;
-        const line_buffer = try a.alloc(u8, cols + 1);
-        defer a.free(line_buffer);
+        try self.ensureLineBuffer(cols + 1);
         // materialize the doc lines directly into sokol's debugtext
         var row: usize = 0;
-        var writer = SdtxWriter{ .buffer = line_buffer };
+        var writer = SdtxWriter{ .buffer = self.line_buffer };
+        // const rows_per_flush = @max(1, GLYPH_BUDGET / cols);
         while (row < layout.lines.len) : (row += 1) {
             sdtx.pos(0, @floatFromInt(row));
             const line = layout.lines[row];
@@ -89,6 +94,15 @@ pub const Renderer = struct {
             sgl.v2f(p3.x, p3.y);
             sgl.end();
             sgl.draw();
+        }
+    }
+
+    fn ensureLineBuffer(self: *Renderer, want: usize) !void {
+        if (self.line_buffer.len >= want) return;
+        if (self.line_buffer.len == 0) {
+            self.line_buffer = try self.alloc.alloc(u8, want);
+        } else {
+            self.line_buffer = try self.alloc.realloc(self.line_buffer, want);
         }
     }
 };

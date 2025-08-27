@@ -20,15 +20,22 @@ pub const Caret = struct {
 pub const Document = struct {
     buffer: TextBuffer,
     caret: Caret,
+    owned_src: []const u8,
+    alloc: std.mem.Allocator,
 
     pub fn init(alloc: std.mem.Allocator, original: []const u8) error{ OutOfMemory, FileTooBig }!Document {
+        // creating an owned copy gives the document full ownership, even over string literals
+        const owned = try alloc.dupe(u8, original);
         return .{ 
-            .buffer = try TextBuffer.init(alloc, original),
-            .caret = .{ .byte = 0, .pos = .{ .line = 0, .col = 0 }, .preferred_col = 0, }
+            .buffer = try TextBuffer.init(alloc, owned),
+            .caret = .{ .byte = 0, .pos = .{ .line = 0, .col = 0 }, .preferred_col = 0, },
+            .owned_src = owned,
+            .alloc = alloc,
         };
     }
 
     pub fn deinit(self: *Document) void {
+        self.alloc.free(self.owned_src);
         self.buffer.deinit();
     }
 
