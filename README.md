@@ -5,6 +5,20 @@ The name isn't that meaningful, just a play on zig and the idea of building func
 
 Currently, it's in a bare-minimum viable v0 form. However, the core functionality it present.
 
+## Build Process
+
+By default, the build script produces 4 binaries:
+
+Two targets:
+- Whatever system you build on
+- x86_64 Windows
+
+Don't ask me what happens if your system *is* x86_64 windows, I don't know.
+
+Two programs:
+- `Ziggurat`: the actual text editor
+- `test-engine`: a CLI for testing and benchmarking the underlying text buffer
+
 ## Features
 
 - Supports keyboard navigation with arrow keys + home/end
@@ -15,7 +29,6 @@ Currently, it's in a bare-minimum viable v0 form. However, the core functionalit
 - `ctrl-d` exits
 - Dynamic resizing
 - Cursor clamping, cursor will always remain visible
-
 
 ## Limitations
 
