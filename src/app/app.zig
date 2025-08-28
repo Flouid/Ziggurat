@@ -37,7 +37,7 @@ const App = struct {
             .top_line = 0,
             .left_col = 0,
             .height = dims.h,
-            .width = dims.h,
+            .width = dims.w,
         };
         // initialize controller
         self.controller = .{ .doc = &self.doc, .vp = &self.vp };
@@ -90,6 +90,7 @@ const App = struct {
     }
 
     fn refreshLayout(self: *App) !void {
+        std.debug.print("layout refresh triggered.\n", .{});
         _ = self.arena.reset(.retain_capacity);
         self.cached_layout = try Layout.init(self.arena.allocator(), &self.doc, &self.vp);
     }

@@ -24,9 +24,10 @@ pub const Controller = struct {
         // then it will return that action as a command for the app to deal with.
         // If the event is unsupported, it returns a .noop command, do nothing
         // If the event was supported and handled, it returns .done. 
-        var action = false;
+        var modified = false;
         switch (ev.*.type) {
             .KEY_DOWN => {
+                modified = true;
                 const key = ev.*.key_code;
                 const modifiers = modifiersOf(ev);
                 // ctrl-s to save
@@ -34,7 +35,6 @@ pub const Controller = struct {
                 // ctrl-d to exit
                 if (modifiers.ctrl and key == .D) return .exit;
 
-                action = true;
                 switch (key) {
                     .RIGHT => try self.doc.moveRight(),
                     .LEFT => try self.doc.moveLeft(),
@@ -44,11 +44,11 @@ pub const Controller = struct {
                     .END => try self.doc.moveEnd(),
                     .BACKSPACE => try self.doc.caretBackspace(1),
                     .ENTER => try self.doc.caretInsert("\n"),
-                    else => action = false,
+                    else => return .noop,
                 }
             },
             .CHAR => {
-                action = true;
+                modified = true;
                 var buf: [4]u8 = undefined;
                 const len = try std.unicode.utf8Encode(@intCast(ev.*.char_code), &buf);
                 try self.doc.caretInsert(buf[0..len]);
@@ -74,8 +74,8 @@ pub const Controller = struct {
             },
             else => return .noop,
         }
-        // if some action was taken, jump to cursor
-        if (action) {
+        // if the cursor was modified in any way, jump to it
+        if (modified) {
             const caret_pos = self.doc.caret.pos;
             self.vp.ensureCaretVisible(caret_pos);
             self.vp.clampVert(self.doc.lineCount());
