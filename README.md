@@ -36,9 +36,7 @@ Two programs:
 - No selection/highlight
 - No undo/redo
 - No file renaming
-- Rendering pipeline not particularly performant yet, does choke on large files
 - No scaling or font support
 - No text wrapping
-
 
 ![alt text](image.png)
