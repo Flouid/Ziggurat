@@ -23,7 +23,7 @@ pub const Controller = struct {
         // If the controller determines some action is requested which it cannot handle (save/exit/etc),
         // then it will return that action as a command for the app to deal with.
         // If the event is unsupported, it returns a .noop command, do nothing
-        // If the event was supported and handled, it returns .done. 
+        // If the event was supported and handled, it returns .done (trigger re-render). 
         var modified = false;
         switch (ev.*.type) {
             .KEY_DOWN => {
@@ -53,7 +53,10 @@ pub const Controller = struct {
                 const len = try std.unicode.utf8Encode(@intCast(ev.*.char_code), &buf);
                 try self.doc.caretInsert(buf[0..len]);
             },
-            .MOUSE_ENTER => sapp.setMouseCursor(.IBEAM),
+            .MOUSE_ENTER => {
+                sapp.setMouseCursor(.IBEAM);
+                return .noop;
+            },
             .MOUSE_SCROLL => {
                 const modifiers = modifiersOf(ev);
                 var dx = ev.*.scroll_x / 4;
@@ -70,17 +73,18 @@ pub const Controller = struct {
                 }
                 const d_lines: isize = @intFromFloat(dy * Y_SCROLL);
                 const d_cols: isize = @intFromFloat(dx * X_SCROLL);
-                self.vp.scrollBy(d_lines, d_cols);
+                const n_lines = self.doc.lineCount();
+                const n_cols = self.doc.lineLength();
+                if (!self.vp.scrollBy(d_lines, d_cols, n_lines, n_cols)) return .noop;
             },
             else => return .noop,
         }
         // if the cursor was modified in any way, jump to it
         if (modified) {
             const caret_pos = self.doc.caret.pos;
-            self.vp.ensureCaretVisible(caret_pos);
-            self.vp.clampVert(self.doc.lineCount());
-            const active_line_span = try self.doc.lineSpan(caret_pos.line);
-            self.vp.clampHorz(active_line_span.len);
+            const n_lines = self.doc.lineCount();
+            const n_cols = self.doc.lineLength();
+            self.vp.ensureCaretVisible(caret_pos, n_lines, n_cols);
         }
         return .done;
     }

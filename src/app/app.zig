@@ -65,8 +65,7 @@ const App = struct {
     fn frame(self: *App) !void {
         // calculating dimensions per frame natively supports resizing
         const dims = windowCells(self.renderer.theme.pad_x, self.renderer.theme.pad_y);
-        self.vp.height = dims.h;
-        self.vp.width = dims.w;
+        self.vp.resize(dims.h, dims.w);
         // rebuild the layout if an edit occured since last frame
         if (self.dirty) {
             self.dirty = false;
@@ -90,7 +89,6 @@ const App = struct {
     }
 
     fn refreshLayout(self: *App) !void {
-        std.debug.print("layout refresh triggered.\n", .{});
         _ = self.arena.reset(.retain_capacity);
         self.cached_layout = try Layout.init(self.arena.allocator(), &self.doc, &self.vp);
     }

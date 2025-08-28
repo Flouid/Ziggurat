@@ -22,6 +22,7 @@ pub const Document = struct {
     caret: Caret,
     owned_src: []const u8,
     alloc: std.mem.Allocator,
+    max_cols: usize = 0,
 
     pub fn init(alloc: std.mem.Allocator, original: []const u8) error{ OutOfMemory, FileTooBig }!Document {
         // creating an owned copy gives the document full ownership, even over string literals
@@ -50,6 +51,9 @@ pub const Document = struct {
     }
     pub fn lineCount(self: *const Document) usize {
         return self.buffer.root.weight_lines + 1;
+    }
+    pub fn lineLength(self: *const Document) usize {
+        return self.max_cols + 1;
     }
 
     // editing around the cursor
@@ -193,6 +197,7 @@ pub const Document = struct {
         debug.dassert(end >= start, "line cannot have negative length");
         // subtracts newline for all lines except the last (no newline)
         const len = if (line + 1 < self.lineCount()) end - start - 1 else end - start;
+        if (len > self.max_cols) self.max_cols = len;
         return .{ .start = start, .len = len };
     }
 
