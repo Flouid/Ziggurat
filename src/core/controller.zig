@@ -77,6 +77,7 @@ pub const Controller = struct {
                 const n_cols = self.doc.lineLength();
                 if (!self.vp.scrollBy(d_lines, d_cols, n_lines, n_cols)) return .noop;
             },
+            .RESIZED => return .done,
             else => return .noop,
         }
         // if the cursor was modified in any way, jump to it
