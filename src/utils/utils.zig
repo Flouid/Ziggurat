@@ -16,7 +16,7 @@ pub fn orderedRemoveRange(comptime T: type, list: *std.ArrayList(T), start: usiz
     debug.dassert(count > 0, "cannot remove 0 items");
 
     const tail_start = start + count;
-    std.mem.copyForwards(T, list.items[start..list.items.len - count], list.items[tail_start..]);
+    std.mem.copyForwards(T, list.items[start .. list.items.len - count], list.items[tail_start..]);
     list.shrinkRetainingCapacity(list.items.len - count);
 }
 
@@ -52,8 +52,8 @@ pub fn bytesToHexAlloc(alloc: std.mem.Allocator, bytes: []const u8) ![]u8 {
 
     var i: usize = 0;
     for (bytes) |b| {
-        out[i]   = tbl[(b >> 4) & 0x0F];
-        out[i+1] = tbl[b & 0x0F];
+        out[i] = tbl[(b >> 4) & 0x0F];
+        out[i + 1] = tbl[b & 0x0F];
         i += 2;
     }
     return out;
@@ -94,6 +94,22 @@ pub fn printf(comptime fmt: []const u8, args: anytype) !void {
 
 pub fn countNewlinesInSlice(slice: []const u8) usize {
     var count: usize = 0;
-    for (slice) |c| { if (c == '\n') count += 1; }
+    for (slice) |c| {
+        if (c == '\n') count += 1;
+    }
     return count;
+}
+
+pub fn indexOfKthNewlineInRange(slice: []const u8, start: usize, end: usize, k: usize) usize {
+    // count up to k newlines between a start and end index in a given slice
+    // NOTE: assumes you can guarantee that there ARE k newlines in the range!!!
+    var seen: usize = 0;
+    var i: usize = start;
+    while (i < end) : (i += 1) {
+        if (slice[i] == '\n') {
+            seen += 1;
+            if (seen == k) return i;
+        }
+    }
+    @panic("invariant violated: not enough newlines in range");
 }
