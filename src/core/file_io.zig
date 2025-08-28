@@ -3,7 +3,7 @@ const std = @import("std");
 const MAX_FILE_SIZE = @as(usize, 1) << (@bitSizeOf(usize) - 1);
 
 pub fn read(alloc: std.mem.Allocator, path: []const u8) ![]u8 {
-    var file = std.fs.cwd().openFile(path, .{}) catch |e| switch(e) {
+    var file = std.fs.cwd().openFile(path, .{}) catch |e| switch (e) {
         error.FileNotFound => return try alloc.dupe(u8, ""),
         else => return e,
     };

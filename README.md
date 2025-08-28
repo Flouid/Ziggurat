@@ -39,5 +39,6 @@ Two programs:
 - No file renaming
 - No scaling or font support
 - No text wrapping
+- ASCII only, for now
 
 ![alt text](image.png)

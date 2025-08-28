@@ -3,16 +3,26 @@ const sapp = @import("sokol").app;
 const Document = @import("document").Document;
 const Viewport = @import("viewport").Viewport;
 
-pub const Command = union(enum) { 
+const Y_SCROLL = 2;
+const X_SCROLL = 2;
+
+pub const Command = union(enum) {
     save,
     exit,
+    noop,
+    done,
 };
 
 pub const Controller = struct {
     doc: *Document,
     vp: *Viewport,
 
-    pub fn onEvent(self: *Controller, ev: [*c]const sapp.Event) !?Command {
+    pub fn onEvent(self: *Controller, ev: [*c]const sapp.Event) !Command {
+        // this has a very specific contract which is important to understand. 
+        // If the controller determines some action is requested which it cannot handle (save/exit/etc),
+        // then it will return that action as a command for the app to deal with.
+        // If the event is unsupported, it returns a .noop command, do nothing
+        // If the event was supported and handled, it returns .done. 
         switch (ev.*.type) {
             .KEY_DOWN => {
                 const key = ev.*.key_code;
@@ -20,8 +30,9 @@ pub const Controller = struct {
                 // ctrl-s to save
                 if (modifiers.ctrl and key == .S) return .save;
                 // ctrl-d to exit
-                if (modifiers.ctrl and key == . D) return .exit;
+                if (modifiers.ctrl and key == .D) return .exit;
 
+                var action = true;
                 switch (key) {
                     .RIGHT => try self.doc.moveRight(),
                     .LEFT => try self.doc.moveLeft(),
@@ -31,7 +42,15 @@ pub const Controller = struct {
                     .END => try self.doc.moveEnd(),
                     .BACKSPACE => try self.doc.caretBackspace(1),
                     .ENTER => try self.doc.caretInsert("\n"),
-                    else => {},
+                    else => action = false,
+                }
+                // if some action was taken, jump to cursor
+                if (action) {
+                    const caret_pos = self.doc.caret.pos;
+                    self.vp.ensureCaretVisible(caret_pos);
+                    self.vp.clampVert(self.doc.lineCount());
+                    const active_line_span = try self.doc.lineSpan(caret_pos.line);
+                    self.vp.clampHorz(active_line_span.len);
                 }
             },
             .CHAR => {
@@ -39,10 +58,23 @@ pub const Controller = struct {
                 const len = try std.unicode.utf8Encode(@intCast(ev.*.char_code), &buf);
                 try self.doc.caretInsert(buf[0..len]);
             },
-            else => {},
+            .MOUSE_ENTER => sapp.setMouseCursor(.IBEAM),
+            .MOUSE_SCROLL => {
+                const modifiers = modifiersOf(ev);
+                var dx = ev.*.scroll_x / 4;
+                var dy = ev.*.scroll_y / 4;
+                // support shift + scroll -> horizontal scroll
+                if (dx == 0 and dy != 0 and modifiers.shift) {
+                    dx = dy;
+                    dy = 0;
+                }
+                const d_lines: isize = @intFromFloat(dy * Y_SCROLL);
+                const d_cols: isize = @intFromFloat(dx * X_SCROLL);
+                self.vp.scrollBy(d_lines, d_cols);
+            },
+            else => return .noop,
         }
-
-        return null;
+        return .done;
     }
 };
 

@@ -26,9 +26,13 @@ pub const Document = struct {
     pub fn init(alloc: std.mem.Allocator, original: []const u8) error{ OutOfMemory, FileTooBig }!Document {
         // creating an owned copy gives the document full ownership, even over string literals
         const owned = try alloc.dupe(u8, original);
-        return .{ 
+        return .{
             .buffer = try TextBuffer.init(alloc, owned),
-            .caret = .{ .byte = 0, .pos = .{ .line = 0, .col = 0 }, .preferred_col = 0, },
+            .caret = .{
+                .byte = 0,
+                .pos = .{ .line = 0, .col = 0 },
+                .preferred_col = 0,
+            },
             .owned_src = owned,
             .alloc = alloc,
         };
@@ -41,8 +45,12 @@ pub const Document = struct {
 
     // pass-through length helpers
 
-    pub fn size(self: *const Document) usize { return self.buffer.doc_len; }
-    pub fn lineCount(self: *const Document) usize { return self.buffer.root.weight_lines + 1; }
+    pub fn size(self: *const Document) usize {
+        return self.buffer.doc_len;
+    }
+    pub fn lineCount(self: *const Document) usize {
+        return self.buffer.root.weight_lines + 1;
+    }
 
     // editing around the cursor
 
@@ -53,8 +61,9 @@ pub const Document = struct {
         // update the cursor cheaply
         const c = &self.caret;
         const newlines = utils.countNewlinesInSlice(text);
-        if (newlines == 0) { c.pos.col += text.len; }
-        else {
+        if (newlines == 0) {
+            c.pos.col += text.len;
+        } else {
             c.pos.line += newlines;
             // figure out how many characters were after the last newline in the inserted text
             var i = text.len - 1;
@@ -80,8 +89,9 @@ pub const Document = struct {
         try self.buffer.delete(start, take);
         // perform cursor update
         c.byte -= take;
-        if (newlines == 0) { c.pos.col -= take; }
-        else {
+        if (newlines == 0) {
+            c.pos.col -= take;
+        } else {
             c.pos.line -= newlines;
             const line_start = try self.lineStart(c.pos.line);
             c.pos.col = c.byte - line_start;
@@ -102,8 +112,11 @@ pub const Document = struct {
         const c = &self.caret;
         if (c.byte == 0) return;
         c.byte -= 1;
-        if (c.pos.col > 0) { c.pos.col -= 1; }
-        else { c.pos = try self.byteToPos(c.byte); }
+        if (c.pos.col > 0) {
+            c.pos.col -= 1;
+        } else {
+            c.pos = try self.byteToPos(c.byte);
+        }
         c.preferred_col = c.pos.col;
     }
 
@@ -113,10 +126,11 @@ pub const Document = struct {
         const line_end = try self.lineEnd(c.pos.line);
         // move to next line, account for EOF special case
         if (c.byte + 1 == line_end and line_end < self.size()) {
-            c.pos.line += 1; 
+            c.pos.line += 1;
             c.pos.col = 0;
+        } else {
+            c.pos.col += 1;
         }
-        else { c.pos.col += 1; }
         c.byte += 1;
         c.preferred_col = c.pos.col;
     }
@@ -138,7 +152,10 @@ pub const Document = struct {
 
     pub fn moveUp(self: *Document) error{OutOfMemory}!void {
         const c = &self.caret;
-        if (c.pos.line == 0) { try self.moveHome(); return; }
+        if (c.pos.line == 0) {
+            try self.moveHome();
+            return;
+        }
         c.pos.line -= 1;
         const span = try self.lineSpan(c.pos.line);
         c.pos.col = @min(c.preferred_col, span.len);
@@ -147,7 +164,10 @@ pub const Document = struct {
 
     pub fn moveDown(self: *Document) error{OutOfMemory}!void {
         const c = &self.caret;
-        if (c.pos.line + 1 >= self.lineCount()) { try self.moveEnd(); return; }
+        if (c.pos.line + 1 >= self.lineCount()) {
+            try self.moveEnd();
+            return;
+        }
         c.pos.line += 1;
         const span = try self.lineSpan(c.pos.line);
         c.pos.col = @min(c.preferred_col, span.len);

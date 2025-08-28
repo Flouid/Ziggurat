@@ -9,7 +9,6 @@ const sdtx = sokol.debugtext;
 const sgl = sokol.gl;
 const sglue = sokol.glue;
 
-
 pub const Renderer = struct {
     theme: Theme,
     alloc: std.mem.Allocator,
@@ -18,9 +17,9 @@ pub const Renderer = struct {
     pub fn init(alloc: std.mem.Allocator, theme: Theme) Renderer {
         const renderer = Renderer{ .theme = theme, .alloc = alloc };
         sgfx.setup(.{ .environment = sglue.environment() });
-        sdtx.setup(.{ 
-            .fonts = .{ sdtx.fontKc853(), .{}, .{}, .{}, .{}, .{}, .{}, .{} } ,
-            .context = .{ .char_buf_size = 1 << 16},
+        sdtx.setup(.{
+            .fonts = .{ sdtx.fontKc853(), .{}, .{}, .{}, .{}, .{}, .{}, .{} },
+            .context = .{ .char_buf_size = 1 << 16 },
         });
         sdtx.font(0);
         sgl.setup(.{});
@@ -81,10 +80,10 @@ pub const Renderer = struct {
             const h = cell_size;
             const w = cell_size / 4;
             // calculate vertices in clip space
-            const p0 = px_to_ndc(x,   y,   appDims);
-            const p1 = px_to_ndc(x+w, y,   appDims);
-            const p2 = px_to_ndc(x+w, y+h, appDims);
-            const p3 = px_to_ndc(x,   y+h, appDims);
+            const p0 = px_to_ndc(x, y, appDims);
+            const p1 = px_to_ndc(x + w, y, appDims);
+            const p2 = px_to_ndc(x + w, y + h, appDims);
+            const p3 = px_to_ndc(x, y + h, appDims);
             // draw filled rectangle for the caret
             sgl.c1i(self.theme.caret);
             sgl.beginQuads();
@@ -107,7 +106,7 @@ pub const Renderer = struct {
     }
 };
 
-pub const Theme = struct { 
+pub const Theme = struct {
     // colors stored as packed 32-bit integers in RGBA order
     // for example, 0xRRGGBBAA
     background: u32,
@@ -128,7 +127,7 @@ const SdtxWriter = struct {
         // write into a private buffer, accumulate any number of writes as long as they fit in one line
         if (bytes.len == 0) return;
         debug.dassert(self.end + bytes.len < self.buffer.len, "attempt to write past the end of line buffer");
-        @memcpy(self.buffer[self.end..self.end + bytes.len], bytes);
+        @memcpy(self.buffer[self.end .. self.end + bytes.len], bytes);
         self.end += bytes.len;
     }
 
@@ -150,15 +149,15 @@ fn rgbaToAbgr(rgba: u32) u32 {
     // for some absurd reason, some sokol functions take RGBA and others take ABGR...
     const r: u32 = (rgba >> 24) & 0xFF;
     const g: u32 = (rgba >> 16) & 0xFF;
-    const b: u32 = (rgba >> 8)  & 0xFF;
-    const a: u32 =  rgba        & 0xFF;
+    const b: u32 = (rgba >> 8) & 0xFF;
+    const a: u32 = rgba & 0xFF;
     return (a << 24) | (b << 16) | (g << 8) | r;
 }
 
 fn toColor(rgba: u32) sgfx.Color {
     // other functions still take a {r, g, b, a} struct...
-    const a = @as(f32, @floatFromInt( rgba        & 0xFF)) / 255.0;
-    const b = @as(f32, @floatFromInt((rgba >> 8)  & 0xFF)) / 255.0;
+    const a = @as(f32, @floatFromInt(rgba & 0xFF)) / 255.0;
+    const b = @as(f32, @floatFromInt((rgba >> 8) & 0xFF)) / 255.0;
     const g = @as(f32, @floatFromInt((rgba >> 16) & 0xFF)) / 255.0;
     const r = @as(f32, @floatFromInt((rgba >> 24) & 0xFF)) / 255.0;
     return .{ .r = r, .g = g, .b = b, .a = a };
@@ -171,4 +170,3 @@ fn px_to_ndc(x_px: f32, y_px: f32, appDims: Dimensions) Dimensions {
         .y = 1.0 - (y_px / appDims.y) * 2.0,
     };
 }
-
