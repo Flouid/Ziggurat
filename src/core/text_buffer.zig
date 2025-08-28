@@ -161,7 +161,6 @@ pub const TextBuffer = struct {
             switch (node.children) {
                 .leaf => {
                     const pieces = leafPiecesConst(node).items;
-                    if (pieces.len == 1) return offset + (try self.findNthNewlineInPiece(&pieces[0], remaining)) + 1;
                     var acc: usize = 0;
                     var i: usize = 0;
                     while (i < pieces.len and remaining > 0) : (i += 1) {
