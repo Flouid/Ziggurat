@@ -11,7 +11,7 @@ pub const Command = union(enum) {
     save,
     exit,
     noop,
-    done,
+    edit,
 };
 
 pub const Controller = struct {
@@ -19,11 +19,11 @@ pub const Controller = struct {
     vp: *Viewport,
 
     pub fn onEvent(self: *Controller, ev: [*c]const sapp.Event) !Command {
-        // this has a very specific contract which is important to understand. 
+        // this has a very specific contract which is important to understand.
         // If the controller determines some action is requested which it cannot handle (save/exit/etc),
         // then it will return that action as a command for the app to deal with.
         // If the event is unsupported, it returns a .noop command, do nothing
-        // If the event was supported and handled, it returns .done (trigger re-render). 
+        // If the event was supported and handled, it returns .edit (trigger re-render).
         var modified = false;
         switch (ev.*.type) {
             .KEY_DOWN => {
@@ -77,7 +77,7 @@ pub const Controller = struct {
                 const n_cols = self.doc.lineLength();
                 if (!self.vp.scrollBy(d_lines, d_cols, n_lines, n_cols)) return .noop;
             },
-            .RESIZED => return .done,
+            .RESIZED => return .edit,
             else => return .noop,
         }
         // if the cursor was modified in any way, jump to it
@@ -87,7 +87,7 @@ pub const Controller = struct {
             const n_cols = self.doc.lineLength();
             self.vp.ensureCaretVisible(caret_pos, n_lines, n_cols);
         }
-        return .done;
+        return .edit;
     }
 };
 
