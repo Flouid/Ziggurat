@@ -161,6 +161,7 @@ pub const TextBuffer = struct {
             switch (node.children) {
                 .leaf => {
                     const pieces = leafPiecesConst(node).items;
+                    if (pieces.len == 1) return offset + self.findNthNewlineInPiece(&pieces[0], remaining) + 1;
                     var acc: usize = 0;
                     var i: usize = 0;
                     while (i < pieces.len and remaining > 0) : (i += 1) {
@@ -525,7 +526,7 @@ pub const TextBuffer = struct {
         // count all newlines in a piece
         switch (p.buf()) {
             .Original => return self.o_idx.countRange(self.alloc, self.original, p.off, p.len()),
-            .Add => return self.a_idx.countRange(self.alloc, self.add.items, p.off, p.len()),
+            .Add      => return self.a_idx.countRange(self.alloc, self.add.items, p.off, p.len()),
         }
     }
 
@@ -533,7 +534,7 @@ pub const TextBuffer = struct {
         // count newlines within some subset of a piece's bytes
         switch (p.buf()) {
             .Original => return self.o_idx.countRange(self.alloc, self.original, p.off + offset, len),
-            .Add => return self.a_idx.countRange(self.alloc, self.add.items, p.off + offset, len),
+            .Add      => return self.a_idx.countRange(self.alloc, self.add.items, p.off + offset, len),
         }
     }
 
@@ -561,6 +562,7 @@ pub const TextBuffer = struct {
 
     fn findNthNewlineInPiece(self: *TextBuffer, p: *const Piece, n: usize) usize {
         // return byte offset within a piece of the n-th newline
+        if (n == 0) return 0;
         const src = switch (p.buf()) {
             .Original => self.original,
             .Add      => self.add.items,
@@ -979,7 +981,7 @@ fn planBorrow(node: *Node, siblings: Siblings) BorrowPlan {
 // -------------------- LAZY LINE INDEXING IMPLEMENTATION --------------------
 // Maintains a lazy way to map buffer indices to newline counts
 
-const PAGE_SIZE = 4 * 1024;
+const PAGE_SIZE = 16 * 1024;
 
 const NewLineIndex = struct {
     // Real-world navigation in documents is generally line-centric.
@@ -1046,8 +1048,7 @@ const NewLineIndex = struct {
         const left_edge = (page_0 + 1) * PAGE_SIZE;
         total += utils.countNewlinesInSlice(buf[start..left_edge]);
         // ensure prefixes are counted up to and including the end page
-        var page = page_0;
-        while (page <= page_1) : (page += 1) self.ensurePage(buf, page);
+        self.ensurePage(buf, page_1);
         // use prefix differences for interior pages
         if (page_1 > page_0 + 1) {
             const prefix_end = self.prefix.items[page_1 - 1];
