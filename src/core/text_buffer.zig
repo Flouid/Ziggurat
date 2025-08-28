@@ -161,14 +161,14 @@ pub const TextBuffer = struct {
             switch (node.children) {
                 .leaf => {
                     const pieces = leafPiecesConst(node).items;
-                    if (pieces.len == 1) return offset + self.findNthNewlineInPiece(&pieces[0], remaining) + 1;
+                    if (pieces.len == 1) return offset + (try self.findNthNewlineInPiece(&pieces[0], remaining)) + 1;
                     var acc: usize = 0;
                     var i: usize = 0;
                     while (i < pieces.len and remaining > 0) : (i += 1) {
                         const piece = &pieces[i];
                         const lines_in_piece = try self.countLinesInPiece(piece);
                         if (remaining <= lines_in_piece) {
-                            return offset + acc + self.findNthNewlineInPiece(piece, remaining) + 1;
+                            return offset + acc + (try self.findNthNewlineInPiece(piece, remaining)) + 1;
                         } else {
                             remaining -= lines_in_piece;
                             acc       += piece.len();
@@ -560,23 +560,13 @@ pub const TextBuffer = struct {
         return .{ .bytes = moved_bytes, .lines = moved_lines };
     }
 
-    fn findNthNewlineInPiece(self: *TextBuffer, p: *const Piece, n: usize) usize {
+    fn findNthNewlineInPiece(self: *TextBuffer, p: *const Piece, n: usize) error{OutOfMemory}!usize {
         // return byte offset within a piece of the n-th newline
-        if (n == 0) return 0;
-        const src = switch (p.buf()) {
-            .Original => self.original,
-            .Add      => self.add.items,
+        const idx = switch (p.buf()) {
+            .Original => try self.o_idx.NthNewlineAfter(self.alloc, self.original, p.off, n),
+            .Add      => try self.a_idx.NthNewlineAfter(self.alloc, self.add.items, p.off, n),
         };
-        const slice = src[p.off..p.off + p.len()];
-        var i: usize = 0;
-        var seen: usize = 0;
-        while (i < slice.len) : (i += 1) {
-            if (slice[i] == '\n') {
-                seen += 1;
-                if (seen == n) return i;
-            }
-        }
-        @panic("not enough newlines in piece");
+        return idx - p.off;
     }
 };
 
@@ -1059,6 +1049,56 @@ const NewLineIndex = struct {
         const right_edge = page_1 * PAGE_SIZE;
         total += utils.countNewlinesInSlice(buf[right_edge..end]);
         return total;
+    }
+
+    fn NthNewlineAfter(self: *NewLineIndex, alloc: std.mem.Allocator, buf: []const u8, start: usize, n: usize) error{OutOfMemory}!usize {
+        if (n == 0) return start;
+        try self.ensureCapacityForLen(alloc, buf.len);
+        // calculate starting and ending indices for current page, offset within the page etc
+        const page = start / PAGE_SIZE;
+        const page_start = page * PAGE_SIZE;
+        const page_end = @min(page_start + PAGE_SIZE, buf.len);
+        self.ensurePage(buf, page);
+        // number of newlines in the first partial page
+        const in_partial = utils.countNewlinesInSlice(buf[start..page_end]);
+        if (n <= in_partial) {
+            var seen: usize = 0;
+            var i: usize = start;
+            while (i < page_end) : (i += 1) {
+                if (buf[i] == '\n') {
+                    seen += 1;
+                    if (seen == n) return i;
+                }
+            }
+            @panic("unexpected newline count mismatch");
+        }
+        // now ensure the whole buffer has been scanned
+        const remaining = n - in_partial;
+        const last_page = (buf.len - 1) / PAGE_SIZE;
+        self.ensurePage(buf, last_page);
+        const prefix = self.prefix.items;
+        // binary search the prefilled pages until the page containing the nth newline is found
+        var lo = page_start + 1;
+        var hi = last_page;
+        while (lo < hi) {
+            const mid = lo + (hi - lo) / 2;
+            const between = prefix[mid] - prefix[page_start];
+            if (between >= remaining) hi = mid else lo = mid + 1;
+        }
+        const target_page = lo;
+        const before_target = prefix[target_page - 1] - prefix[page_start];
+        // need the kth newline inside the target page
+        var k = remaining - before_target;
+        const target_begin = target_page * PAGE_SIZE;
+        const target_end = @min(target_begin + PAGE_SIZE, buf.len);
+        var i: usize = target_begin;
+        while (i < target_end) : (i += 1) {
+            if (buf[i] == '\n') {
+                k -= 1;
+                if (k == 0) return i;
+            }
+        }
+        @panic("inconsistent prefix/newline counts");
     }
 };
 
