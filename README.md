@@ -21,6 +21,7 @@ Two programs:
 
 ## Features
 
+- Smoothly opens, edits, and saves multi-GB files
 - Supports keyboard navigation with arrow keys + home/end
 - Supports generic typing + backspace
 - If launched with no command-line args, it opens an empty scratch document

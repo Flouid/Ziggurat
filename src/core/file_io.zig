@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const MAX_FILE_SIZE = 1 << 31;  // 2 GiB
+const MAX_FILE_SIZE = @as(usize, 1) << (@bitSizeOf(usize) - 1);
 
 pub fn read(alloc: std.mem.Allocator, path: []const u8) ![]u8 {
     var file = std.fs.cwd().openFile(path, .{}) catch |e| switch(e) {
