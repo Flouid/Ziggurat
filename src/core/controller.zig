@@ -5,6 +5,7 @@ const Viewport = @import("viewport").Viewport;
 
 const Y_SCROLL = 2;
 const X_SCROLL = 2;
+const REVERSE_DIR = true;
 
 pub const Command = union(enum) {
     save,
@@ -23,6 +24,7 @@ pub const Controller = struct {
         // then it will return that action as a command for the app to deal with.
         // If the event is unsupported, it returns a .noop command, do nothing
         // If the event was supported and handled, it returns .done. 
+        var action = false;
         switch (ev.*.type) {
             .KEY_DOWN => {
                 const key = ev.*.key_code;
@@ -32,7 +34,7 @@ pub const Controller = struct {
                 // ctrl-d to exit
                 if (modifiers.ctrl and key == .D) return .exit;
 
-                var action = true;
+                action = true;
                 switch (key) {
                     .RIGHT => try self.doc.moveRight(),
                     .LEFT => try self.doc.moveLeft(),
@@ -44,16 +46,9 @@ pub const Controller = struct {
                     .ENTER => try self.doc.caretInsert("\n"),
                     else => action = false,
                 }
-                // if some action was taken, jump to cursor
-                if (action) {
-                    const caret_pos = self.doc.caret.pos;
-                    self.vp.ensureCaretVisible(caret_pos);
-                    self.vp.clampVert(self.doc.lineCount());
-                    const active_line_span = try self.doc.lineSpan(caret_pos.line);
-                    self.vp.clampHorz(active_line_span.len);
-                }
             },
             .CHAR => {
+                action = true;
                 var buf: [4]u8 = undefined;
                 const len = try std.unicode.utf8Encode(@intCast(ev.*.char_code), &buf);
                 try self.doc.caretInsert(buf[0..len]);
@@ -68,11 +63,24 @@ pub const Controller = struct {
                     dx = dy;
                     dy = 0;
                 }
+                // support reversing scroll direction
+                if (REVERSE_DIR) {
+                    dx = -dx;
+                    dy = -dy;
+                }
                 const d_lines: isize = @intFromFloat(dy * Y_SCROLL);
                 const d_cols: isize = @intFromFloat(dx * X_SCROLL);
                 self.vp.scrollBy(d_lines, d_cols);
             },
             else => return .noop,
+        }
+        // if some action was taken, jump to cursor
+        if (action) {
+            const caret_pos = self.doc.caret.pos;
+            self.vp.ensureCaretVisible(caret_pos);
+            self.vp.clampVert(self.doc.lineCount());
+            const active_line_span = try self.doc.lineSpan(caret_pos.line);
+            self.vp.clampHorz(active_line_span.len);
         }
         return .done;
     }
