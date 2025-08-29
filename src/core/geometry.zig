@@ -1,10 +1,7 @@
 const std = @import("std");
 const Document = @import("document").Document;
 const Viewport = @import("viewport").Viewport;
-const TextPos = @import("types").TextPos;
-const ScreenPos = @import("types").ScreenPos;
-const PixelPos = @import("types").PixelPos;
-const ClipPos = @import("types").ClipPos;
+const Types = @import("types");
 
 pub const Geometry = struct {
     cell_w_px: f32,
@@ -12,8 +9,8 @@ pub const Geometry = struct {
     pad_x_cells: f32,
     pad_y_cells: f32,
 
-    pub fn mouseToTextPos(self: *Geometry, doc: *Document, vp: *const Viewport, mouse_x: f32, mouse_y: f32) !?TextPos {
-        if (vp.height == 0 or vp.width == 0) return null;
+    pub fn mouseToTextPos(self: *const Geometry, doc: *Document, vp: *const Viewport, mouse_x: f32, mouse_y: f32) !?Types.TextPos {
+        if (vp.dims.h == 0 or vp.dims.w == 0) return null;
         // account for padding
         const x = mouse_x - self.pad_x_cells * self.cell_w_px;
         const y = mouse_y - self.pad_y_cells * self.cell_h_px;
@@ -30,26 +27,35 @@ pub const Geometry = struct {
         return .{ .row = row, .col = col };
     }
 
-    pub fn screenPosToPixelPos(self: *Geometry, pos: ScreenPos) PixelPos {
+    pub fn screenPosToPixelPos(self: *const Geometry, pos: Types.ScreenPos) Types.PixelPos {
         const x = (self.pad_x_cells + @as(f32, @floatFromInt(pos.col))) * self.cell_w_px;
         const y = (self.pad_y_cells + @as(f32, @floatFromInt(pos.row))) * self.cell_h_px;
         return .{ .x = x, .y = y };
     }
+
+    pub fn appDimsToScreenDims(self: *const Geometry, dims: Types.PixelDims) Types.ScreenDims {
+        const avail_w = dims.w - 2.0 * self.pad_x_cells * self.cell_w_px;
+        const avail_h = dims.h - 2.0 * self.pad_y_cells * self.cell_h_px;
+        const w: usize = if (avail_w <= 0) 0 else @intFromFloat(@floor(avail_w / self.cell_h_px));
+        const h: usize = if (avail_h <= 0) 0 else @intFromFloat(@floor(avail_h / self.cell_w_px));
+        return .{ .w = w, .h = h };
+    }
+
+    pub fn pixelPosToClipPos(pos: Types.PixelPos, dims: Types.PixelDims) Types.ClipPos {
+        return .{
+            .x = (pos.x / dims.w) * 2.0 - 1.0,
+            .y = 1.0 - (pos.y / dims.h) * 2.0,
+        };
+    }
+
+    pub fn textPosToScreenPos(tp: Types.TextPos, vp: *const Viewport) ?Types.ScreenPos {
+        if (vp.dims.h == 0 or vp.dims.w == 0) return null;
+        if (tp.row < vp.top_line or tp.row >= vp.top_line + vp.dims.h) return null;
+        if (tp.col < vp.left_col or tp.col >= vp.left_col + vp.dims.w) return null;
+        return .{
+            .row = tp.row - vp.top_line,
+            .col = tp.col - vp.left_col,
+        };
+    }
 };
 
-pub fn pixelPosToClipPos(pos: PixelPos, app_dims: PixelPos) ClipPos {
-    return .{
-        .x = (pos.x / app_dims.x) * 2.0 - 1.0,
-        .y = 1.0 - (pos.y / app_dims.y) * 2.0,
-    };
-}
-
-pub fn textPosToScreenPos(tp: TextPos, vp: *const Viewport) ?ScreenPos {
-    if (vp.height == 0 or vp.width == 0) return null;
-    if (tp.row < vp.top_line or tp.row >= vp.top_line + vp.height) return null;
-    if (tp.col < vp.left_col or tp.col >= vp.left_col + vp.width) return null;
-    return .{
-        .row = tp.row - vp.top_line,
-        .col = tp.col - vp.left_col,
-    };
-}

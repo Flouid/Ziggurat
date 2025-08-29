@@ -1,5 +1,5 @@
 const std = @import("std");
-const TextPos = @import("types").TextPos;
+const Types = @import("types");
 
 pub const LineSpan = struct {
     first: usize,
@@ -9,24 +9,23 @@ pub const LineSpan = struct {
 pub const Viewport = struct {
     top_line: usize,
     left_col: usize,
-    height: usize,
-    width: usize,
+    dims: Types.ScreenDims,
 
     overscroll: usize = 16,
     caret_margin: usize = 8,
 
-    pub fn ensureCaretVisible(self: *Viewport, caret: TextPos, max_line: usize, max_col: usize) void {
+    pub fn ensureCaretVisible(self: *Viewport, caret: Types.TextPos, max_line: usize, max_col: usize) void {
         // adjust the viewport so the caret always remains visible
-        if (self.height == 0 or self.width == 0) return;
+        if (self.dims.h == 0 or self.dims.w == 0) return;
         // caret may hug top edge
         if (caret.row < self.top_line + self.caret_margin) {
             self.top_line = if (caret.row < self.caret_margin) 0 else caret.row - self.caret_margin;
         }
         // try to keep bottom some distance from caret
-        const bottom_edge = self.top_line + (self.height - 1);
+        const bottom_edge = self.top_line + (self.dims.h - 1);
         if (caret.row > bottom_edge - @min(self.caret_margin, bottom_edge)) {
             const base = caret.row + self.caret_margin + 1;
-            const top = if (base <= self.height) 0 else base - self.height;
+            const top = if (base <= self.dims.h) 0 else base - self.dims.h;
             const max_top = self.maxTop(max_line);
             self.top_line = @min(top, max_top);
         }
@@ -35,10 +34,10 @@ pub const Viewport = struct {
             self.left_col = if (caret.col < self.caret_margin) 0 else caret.col - self.caret_margin;
         }
         // try to keep right edge some distance from caret
-        const right_edge = self.left_col + (self.width - 1);
+        const right_edge = self.left_col + (self.dims.w - 1);
         if (caret.col > right_edge - @min(self.caret_margin, right_edge)) {
             const base = caret.col + self.caret_margin + 1;
-            const left = if (base <= self.width) 0 else base - self.width;
+            const left = if (base <= self.dims.w) 0 else base - self.dims.w;
             const max_left = self.maxLeft(max_col);
             self.left_col = @min(left, max_left);
         }
@@ -70,23 +69,22 @@ pub const Viewport = struct {
         return (y_scrolled or x_scrolled);
     }
 
-    pub fn resize(self: *Viewport, new_height: usize, new_width: usize) void {
-        self.height = new_height;
-        self.width = new_width;
+    pub fn resize(self: *Viewport, new_dims: Types.ScreenDims) void {
+        self.dims = new_dims;
     }
 
     // -------------------- CLAMPING HELPERS --------------------
 
     fn maxTop(self: *const Viewport, max_line: usize) usize {
-        if (self.height == 0) return 0;
-        const content = max_line + @min(self.overscroll, self.height - 1);
-        return if (content < self.height) 0 else content - self.height;
+        if (self.dims.h == 0) return 0;
+        const content = max_line + @min(self.overscroll, self.dims.h - 1);
+        return if (content < self.dims.h) 0 else content - self.dims.h;
     }
 
     fn maxLeft(self: *const Viewport, max_col: usize) usize {
-        if (self.width == 0) return 0;
-        const content = max_col + @min(self.overscroll, self.width - 1);
-        return if (content < self.width) 0 else content - self.width;
+        if (self.dims.w == 0) return 0;
+        const content = max_col + @min(self.overscroll, self.dims.w - 1);
+        return if (content < self.dims.w) 0 else content - self.dims.w;
     }
 
     fn clampVert(self: *Viewport, max_line: usize) void {

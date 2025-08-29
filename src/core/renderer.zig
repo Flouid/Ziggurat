@@ -3,7 +3,7 @@ const debug = @import("debug");
 const Document = @import("document").Document;
 const Layout = @import("layout").Layout;
 const Geometry = @import("geometry").Geometry;
-const PixelPos = @import("types").PixelPos;
+const PixelDims = @import("types").PixelDims;
 const ClipPos = @import("types").ClipPos;
 const sokol = @import("sokol");
 const sapp = sokol.app;
@@ -79,8 +79,8 @@ pub const Renderer = struct {
         const cols = layout.width;
         if (rows == 0 or cols == 0) return;
         // set positions, create canvas, set text color
-        const appDims: PixelPos = .{ .x = @floatFromInt(sapp.width()), .y = @floatFromInt(sapp.height()) };
-        sdtx.canvas(appDims.x, appDims.y);
+        const dims: PixelDims = .{ .w = @floatFromInt(sapp.width()), .h = @floatFromInt(sapp.height()) };
+        sdtx.canvas(dims.w, dims.h);
         sdtx.origin(self.geom.pad_x_cells, self.geom.pad_y_cells);
         sdtx.home();
         sdtx.color1i(self.foreground);
@@ -104,7 +104,7 @@ pub const Renderer = struct {
             const pos = self.geom.screenPosToPixelPos(caret);
             const h = self.geom.cell_h_px;
             const w = self.geom.cell_w_px / 4;
-            drawQuad(appDims, self.caret, pos.x, pos.y, h, w);
+            drawQuad(dims, self.caret, pos.x, pos.y, h, w);
             sgl.draw();
         }
     }
@@ -160,20 +160,12 @@ fn toColor(rgba: u32) sgfx.Color {
     return .{ .r = r, .g = g, .b = b, .a = a };
 }
 
-fn pixelPosToClipPos(pos: PixelPos, appDims: PixelPos) ClipPos {
-    // translate pixel space to clip space
-    return .{
-        .x = (pos.x / appDims.x) * 2.0 - 1.0,
-        .y = 1.0 - (pos.y / appDims.y) * 2.0,
-    };
-}
-
-fn drawQuad(appDims: PixelPos, color: u32, x: f32, y: f32, h: f32, w: f32) void {
+fn drawQuad(dims: PixelDims, color: u32, x: f32, y: f32, h: f32, w: f32) void {
     // calculate vertices in clip space
-    const p0 = pixelPosToClipPos(.{ .x = x, .y = y }, appDims);
-    const p1 = pixelPosToClipPos(.{ .x = x + w, .y = y }, appDims);
-    const p2 = pixelPosToClipPos(.{ .x = x + w, .y = y + h }, appDims);
-    const p3 = pixelPosToClipPos(.{ .x = x, .y = y + h }, appDims);
+    const p0 = Geometry.pixelPosToClipPos(.{ .x = x, .y = y }, dims);
+    const p1 = Geometry.pixelPosToClipPos(.{ .x = x + w, .y = y }, dims);
+    const p2 = Geometry.pixelPosToClipPos(.{ .x = x + w, .y = y + h }, dims);
+    const p3 = Geometry.pixelPosToClipPos(.{ .x = x, .y = y + h }, dims);
     // draw filled rectangle
     sgl.c1i(color);
     sgl.beginQuads();

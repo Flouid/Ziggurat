@@ -8,6 +8,7 @@ const Renderer = @import("renderer").Renderer;
 const Theme = @import("renderer").Theme;
 const Geometry = @import("geometry").Geometry;
 const Controller = @import("controller").Controller;
+const ScreenDims = @import("types").ScreenDims;
 
 const App = struct {
     gpa: std.heap.GeneralPurposeAllocator(.{}),
@@ -39,13 +40,7 @@ const App = struct {
             self.doc = try Document.init(gpa, "");
         }
         // initialize viewport
-        const dims = windowCells(self.geom);
-        self.vp = .{
-            .top_line = 0,
-            .left_col = 0,
-            .height = dims.h,
-            .width = dims.w,
-        };
+        self.vp = .{ .top_line = 0, .left_col = 0, .dims = self.getScreenDims() };
         // initialize controller
         self.controller = .{ .doc = &self.doc, .vp = &self.vp, .geom = &self.geom };
         // initialize renderer
@@ -73,8 +68,7 @@ const App = struct {
         self.blink_accum_ns = (self.blink_accum_ns + dt) % self.blink_period_ns;
         const draw_caret = self.blink_accum_ns < self.blink_period_ns / 2;
         // calculating dimensions per frame natively supports resizing
-        const dims = windowCells(self.geom);
-        self.vp.resize(dims.h, dims.w);
+        self.vp.resize(self.getScreenDims());
         // rebuild the layout if an edit occured since last frame
         if (self.dirty) {
             self.dirty = false;
@@ -101,17 +95,11 @@ const App = struct {
         _ = self.arena.reset(.retain_capacity);
         self.cached_layout = try Layout.init(self.arena.allocator(), &self.doc, &self.vp);
     }
-};
 
-fn windowCells(geometry: Geometry) struct { w: usize, h: usize } {
-    const w_px = @as(f32, @floatFromInt(sapp.width()));
-    const h_px = @as(f32, @floatFromInt(sapp.height()));
-    const avail_w = w_px - 2.0 * geometry.pad_x_cells * geometry.cell_w_px;
-    const avail_h = h_px - 2.0 * geometry.pad_y_cells * geometry.cell_h_px;
-    const cols: usize = if (avail_w <= 0) 0 else @intFromFloat(@floor(avail_w / geometry.cell_h_px));
-    const rows: usize = if (avail_h <= 0) 0 else @intFromFloat(@floor(avail_h / geometry.cell_w_px));
-    return .{ .w = cols, .h = rows };
-}
+    fn getScreenDims(self: *const App) ScreenDims {
+        return self.geom.appDimsToScreenDims(.{ .w = @floatFromInt(sapp.width()), .h = @floatFromInt(sapp.height()) });
+    }
+};
 
 // GLOBAL app instance, sokol wants this
 var G: App = .{ .gpa = std.heap.GeneralPurposeAllocator(.{}){} };
