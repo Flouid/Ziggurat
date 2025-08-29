@@ -42,6 +42,7 @@ const CoreModules = struct {
     layout: *std.Build.Module,
     renderer: *std.Build.Module,
     file_io: *std.Build.Module,
+    geometry: *std.Build.Module,
     controller: *std.Build.Module,
     app: *std.Build.Module,
 };
@@ -139,6 +140,17 @@ fn addCoreModules(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std
         .optimize = optimize,
     });
 
+    const geom_mod = b.addModule("geometry", .{
+        .root_source_file = b.path("src/core/geometry.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "document", .module = doc_mod },
+            .{ .name = "viewport", .module = viewport_mod },
+            .{ .name = "types", .module = types_mod },
+        },
+    });
+
     const controller_mod = b.addModule("controller", .{
         .root_source_file = b.path("src/core/controller.zig"),
         .target = target,
@@ -147,6 +159,7 @@ fn addCoreModules(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std
             .{ .name = "sokol", .module = dep_sokol.module("sokol") },
             .{ .name = "document", .module = doc_mod },
             .{ .name = "viewport", .module = viewport_mod },
+            .{ .name = "geometry", .module = geom_mod },
         },
     });
 
@@ -162,6 +175,7 @@ fn addCoreModules(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std
             .{ .name = "renderer", .module = renderer_mod },
             .{ .name = "file_io", .module = file_io_mod },
             .{ .name = "controller", .module = controller_mod },
+            .{ .name = "geometry", .module = geom_mod },
         },
     });
 
@@ -176,6 +190,7 @@ fn addCoreModules(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std
         .layout = layout_mod,
         .renderer = renderer_mod,
         .file_io = file_io_mod,
+        .geometry = geom_mod,
         .controller = controller_mod,
         .app = app_mod,
     };

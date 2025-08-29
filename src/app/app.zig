@@ -6,11 +6,13 @@ const Viewport = @import("viewport").Viewport;
 const Layout = @import("layout").Layout;
 const Renderer = @import("renderer").Renderer;
 const Theme = @import("renderer").Theme;
+const Geometry = @import("geometry").Geometry;
 const Controller = @import("controller").Controller;
 
 const App = struct {
     gpa: std.heap.GeneralPurposeAllocator(.{}),
     arena: std.heap.ArenaAllocator = undefined,
+    geometry: Geometry = undefined,
     doc: Document = undefined,
     vp: Viewport = undefined,
     controller: Controller = undefined,
@@ -22,6 +24,8 @@ const App = struct {
 
     fn init(self: *App) !void {
         const gpa = self.gpa.allocator();
+        // initialize geometry
+        self.geometry = .{ .cell_h_px = 8.0, .cell_w_px = 8.0, .pad_x_cells = 0.5, .pad_y_cells = 0.5 };
         // initialize document
         if (self.path_in) |p| {
             const bytes = try file_io.read(gpa, p);
@@ -31,8 +35,7 @@ const App = struct {
             self.doc = try Document.init(gpa, "");
         }
         // initialize viewport
-        const pad = .{ .x = 0.5, .y = 0.5 };
-        const dims = windowCells(pad.x, pad.y);
+        const dims = windowCells(self.geometry);
         self.vp = .{
             .top_line = 0,
             .left_col = 0,
@@ -40,14 +43,14 @@ const App = struct {
             .width = dims.w,
         };
         // initialize controller
-        self.controller = .{ .doc = &self.doc, .vp = &self.vp };
+        self.controller = .{ .doc = &self.doc, .vp = &self.vp, .geom = &self.geometry };
         // initialize renderer
         self.renderer = Renderer.init(gpa, .{
             .background = 0x000000FF,
             .foreground = 0xFFFFFFFF,
             .caret = 0xFFFFFFFF,
-            .pad_x = pad.x,
-            .pad_y = pad.y,
+            .pad_x = self.geometry.pad_x_cells,
+            .pad_y = self.geometry.pad_y_cells,
         });
         // initialize arena for rendering each frame
         self.arena = std.heap.ArenaAllocator.init(gpa);
@@ -64,7 +67,7 @@ const App = struct {
 
     fn frame(self: *App) !void {
         // calculating dimensions per frame natively supports resizing
-        const dims = windowCells(self.renderer.theme.pad_x, self.renderer.theme.pad_y);
+        const dims = windowCells(self.geometry);
         self.vp.resize(dims.h, dims.w);
         // rebuild the layout if an edit occured since last frame
         if (self.dirty) {
@@ -94,14 +97,13 @@ const App = struct {
     }
 };
 
-fn windowCells(pad_x: f32, pad_y: f32) struct { w: usize, h: usize } {
+fn windowCells(geometry: Geometry) struct { w: usize, h: usize } {
     const w_px = @as(f32, @floatFromInt(sapp.width()));
     const h_px = @as(f32, @floatFromInt(sapp.height()));
-    const cell_px: f32 = 8.0;
-    const avail_w = w_px - 2.0 * pad_x;
-    const avail_h = h_px - 2.0 * pad_y;
-    const cols: usize = if (avail_w <= 0) 0 else @intFromFloat(@floor(avail_w / cell_px));
-    const rows: usize = if (avail_h <= 0) 0 else @intFromFloat(@floor(avail_h / cell_px));
+    const avail_w = w_px - 2.0 * geometry.pad_x_cells * geometry.cell_w_px;
+    const avail_h = h_px - 2.0 * geometry.pad_y_cells * geometry.cell_h_px;
+    const cols: usize = if (avail_w <= 0) 0 else @intFromFloat(@floor(avail_w / geometry.cell_h_px));
+    const rows: usize = if (avail_h <= 0) 0 else @intFromFloat(@floor(avail_h / geometry.cell_w_px));
     return .{ .w = cols, .h = rows };
 }
 

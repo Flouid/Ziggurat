@@ -2,6 +2,7 @@ const std = @import("std");
 const sapp = @import("sokol").app;
 const Document = @import("document").Document;
 const Viewport = @import("viewport").Viewport;
+const Geometry = @import("geometry").Geometry;
 
 const Y_SCROLL = 2;
 const X_SCROLL = 2;
@@ -17,6 +18,7 @@ pub const Command = union(enum) {
 pub const Controller = struct {
     doc: *Document,
     vp: *Viewport,
+    geom: *Geometry,
 
     pub fn onEvent(self: *Controller, ev: [*c]const sapp.Event) !Command {
         // this has a very specific contract which is important to understand.
@@ -24,10 +26,8 @@ pub const Controller = struct {
         // then it will return that action as a command for the app to deal with.
         // If the event is unsupported, it returns a .noop command, do nothing
         // If the event was supported and handled, it returns .edit (trigger re-render).
-        var modified = false;
         switch (ev.*.type) {
             .KEY_DOWN => {
-                modified = true;
                 const key = ev.*.key_code;
                 const modifiers = modifiersOf(ev);
                 // ctrl-s to save
@@ -48,10 +48,14 @@ pub const Controller = struct {
                 }
             },
             .CHAR => {
-                modified = true;
                 var buf: [4]u8 = undefined;
                 const len = try std.unicode.utf8Encode(@intCast(ev.*.char_code), &buf);
                 try self.doc.caretInsert(buf[0..len]);
+            },
+            .MOUSE_DOWN => {
+                const pos = try self.geom.mouseToTextPos(self.doc, self.vp, ev.*.mouse_x, ev.*.mouse_y);
+                if (pos) |p| try self.doc.moveTo(p);
+                return .edit;
             },
             .MOUSE_ENTER => {
                 sapp.setMouseCursor(.IBEAM);
@@ -76,17 +80,16 @@ pub const Controller = struct {
                 const n_lines = self.doc.lineCount();
                 const n_cols = self.doc.lineLength();
                 if (!self.vp.scrollBy(d_lines, d_cols, n_lines, n_cols)) return .noop;
+                return .edit;
             },
             .RESIZED => return .edit,
             else => return .noop,
         }
-        // if the cursor was modified in any way, jump to it
-        if (modified) {
-            const caret_pos = self.doc.caret.pos;
-            const n_lines = self.doc.lineCount();
-            const n_cols = self.doc.lineLength();
-            self.vp.ensureCaretVisible(caret_pos, n_lines, n_cols);
-        }
+        // unless skipped via early return, ensure the caret is visible
+        const caret_pos = self.doc.caret.pos;
+        const n_lines = self.doc.lineCount();
+        const n_cols = self.doc.lineLength();
+        self.vp.ensureCaretVisible(caret_pos, n_lines, n_cols);
         return .edit;
     }
 };
