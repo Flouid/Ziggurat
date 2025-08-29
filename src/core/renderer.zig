@@ -160,20 +160,20 @@ fn toColor(rgba: u32) sgfx.Color {
     return .{ .r = r, .g = g, .b = b, .a = a };
 }
 
-fn px_to_ndc(x_px: f32, y_px: f32, appDims: PixelPos) ClipPos {
+fn pixelPosToClipPos(pos: PixelPos, appDims: PixelPos) ClipPos {
     // translate pixel space to clip space
     return .{
-        .x = (x_px / appDims.x) * 2.0 - 1.0,
-        .y = 1.0 - (y_px / appDims.y) * 2.0,
+        .x = (pos.x / appDims.x) * 2.0 - 1.0,
+        .y = 1.0 - (pos.y / appDims.y) * 2.0,
     };
 }
 
 fn drawQuad(appDims: PixelPos, color: u32, x: f32, y: f32, h: f32, w: f32) void {
     // calculate vertices in clip space
-    const p0 = px_to_ndc(x, y, appDims);
-    const p1 = px_to_ndc(x + w, y, appDims);
-    const p2 = px_to_ndc(x + w, y + h, appDims);
-    const p3 = px_to_ndc(x, y + h, appDims);
+    const p0 = pixelPosToClipPos(.{ .x = x, .y = y }, appDims);
+    const p1 = pixelPosToClipPos(.{ .x = x + w, .y = y }, appDims);
+    const p2 = pixelPosToClipPos(.{ .x = x + w, .y = y + h }, appDims);
+    const p3 = pixelPosToClipPos(.{ .x = x, .y = y + h }, appDims);
     // draw filled rectangle
     sgl.c1i(color);
     sgl.beginQuads();

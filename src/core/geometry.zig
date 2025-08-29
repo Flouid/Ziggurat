@@ -4,6 +4,7 @@ const Viewport = @import("viewport").Viewport;
 const TextPos = @import("types").TextPos;
 const ScreenPos = @import("types").ScreenPos;
 const PixelPos = @import("types").PixelPos;
+const ClipPos = @import("types").ClipPos;
 
 pub const Geometry = struct {
     cell_w_px: f32,
@@ -35,3 +36,20 @@ pub const Geometry = struct {
         return .{ .x = x, .y = y };
     }
 };
+
+pub fn pixelPosToClipPos(pos: PixelPos, app_dims: PixelPos) ClipPos {
+    return .{
+        .x = (pos.x / app_dims.x) * 2.0 - 1.0,
+        .y = 1.0 - (pos.y / app_dims.y) * 2.0,
+    };
+}
+
+pub fn textPosToScreenPos(tp: TextPos, vp: *const Viewport) ?ScreenPos {
+    if (vp.height == 0 or vp.width == 0) return null;
+    if (tp.row < vp.top_line or tp.row >= vp.top_line + vp.height) return null;
+    if (tp.col < vp.left_col or tp.col >= vp.left_col + vp.width) return null;
+    return .{
+        .row = tp.row - vp.top_line,
+        .col = tp.col - vp.left_col,
+    };
+}

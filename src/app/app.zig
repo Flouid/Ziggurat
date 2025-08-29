@@ -12,7 +12,7 @@ const Controller = @import("controller").Controller;
 const App = struct {
     gpa: std.heap.GeneralPurposeAllocator(.{}),
     arena: std.heap.ArenaAllocator = undefined,
-    geometry: Geometry = undefined,
+    geom: Geometry = undefined,
     doc: Document = undefined,
     vp: Viewport = undefined,
     controller: Controller = undefined,
@@ -29,7 +29,7 @@ const App = struct {
     fn init(self: *App) !void {
         const gpa = self.gpa.allocator();
         // initialize geometry
-        self.geometry = .{ .cell_h_px = 8.0, .cell_w_px = 8.0, .pad_x_cells = 0.5, .pad_y_cells = 0.5 };
+        self.geom = .{ .cell_h_px = 8.0, .cell_w_px = 8.0, .pad_x_cells = 0.5, .pad_y_cells = 0.5 };
         // initialize document
         if (self.path_in) |p| {
             const bytes = try file_io.read(gpa, p);
@@ -39,7 +39,7 @@ const App = struct {
             self.doc = try Document.init(gpa, "");
         }
         // initialize viewport
-        const dims = windowCells(self.geometry);
+        const dims = windowCells(self.geom);
         self.vp = .{
             .top_line = 0,
             .left_col = 0,
@@ -47,9 +47,9 @@ const App = struct {
             .width = dims.w,
         };
         // initialize controller
-        self.controller = .{ .doc = &self.doc, .vp = &self.vp, .geom = &self.geometry };
+        self.controller = .{ .doc = &self.doc, .vp = &self.vp, .geom = &self.geom };
         // initialize renderer
-        self.renderer = Renderer.init(gpa, .{}, self.geometry);
+        self.renderer = Renderer.init(gpa, .{}, self.geom);
         // initialize arena for rendering each frame
         self.arena = std.heap.ArenaAllocator.init(gpa);
         // cache initial layout on open
@@ -73,7 +73,7 @@ const App = struct {
         self.blink_accum_ns = (self.blink_accum_ns + dt) % self.blink_period_ns;
         const draw_caret = self.blink_accum_ns < self.blink_period_ns / 2;
         // calculating dimensions per frame natively supports resizing
-        const dims = windowCells(self.geometry);
+        const dims = windowCells(self.geom);
         self.vp.resize(dims.h, dims.w);
         // rebuild the layout if an edit occured since last frame
         if (self.dirty) {
