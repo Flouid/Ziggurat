@@ -48,6 +48,19 @@ pub const Geometry = struct {
         };
     }
 
+    pub fn pixelDeltaToClipDelta(pos: Types.PixelPos, dims: Types.PixelDims) Types.ClipPos {
+        return .{
+            .x = (pos.x / dims.w) * 2.0,
+            .y = -(pos.y / dims.h) * 2.0
+        };
+    }
+
+    pub fn pixelPosToClipRect(base: Types.PixelPos, offset: Types.PixelPos, dims: Types.PixelDims) Types.ClipRect {
+        const pos = pixelPosToClipPos(base, dims);
+        const off = pixelDeltaToClipDelta(offset, dims);
+        return .{ .x = pos.x, .y = pos.y, .h = off.y, .w = off.x };
+    }
+
     pub fn textPosToScreenPos(tp: Types.TextPos, vp: *const Viewport) ?Types.ScreenPos {
         if (vp.dims.h == 0 or vp.dims.w == 0) return null;
         if (tp.row < vp.top_line or tp.row >= vp.top_line + vp.dims.h) return null;
@@ -58,4 +71,3 @@ pub const Geometry = struct {
         };
     }
 };
-

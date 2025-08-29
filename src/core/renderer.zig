@@ -3,8 +3,10 @@ const debug = @import("debug");
 const Document = @import("document").Document;
 const Layout = @import("layout").Layout;
 const Geometry = @import("geometry").Geometry;
+const PixelPos = @import("types").PixelPos;
 const PixelDims = @import("types").PixelDims;
 const ClipPos = @import("types").ClipPos;
+const ClipRect = @import("types").ClipRect;
 const sokol = @import("sokol");
 const sapp = sokol.app;
 const sgfx = sokol.gfx;
@@ -102,9 +104,9 @@ pub const Renderer = struct {
         // sgl operates in clip space, so translate from the pixels we used in sdtx
         if (layout.caret) |caret| {
             const pos = self.geom.screenPosToPixelPos(caret);
-            const h = self.geom.cell_h_px;
-            const w = self.geom.cell_w_px / 4;
-            drawQuad(dims, self.caret, pos.x, pos.y, h, w);
+            const off: PixelPos = .{ .x = self.geom.cell_w_px / 4, .y = self.geom.cell_h_px };
+            const rect = Geometry.pixelPosToClipRect(pos, off, dims);
+            drawQuad(self.caret, rect);
             sgl.draw();
         }
     }
@@ -160,18 +162,12 @@ fn toColor(rgba: u32) sgfx.Color {
     return .{ .r = r, .g = g, .b = b, .a = a };
 }
 
-fn drawQuad(dims: PixelDims, color: u32, x: f32, y: f32, h: f32, w: f32) void {
-    // calculate vertices in clip space
-    const p0 = Geometry.pixelPosToClipPos(.{ .x = x, .y = y }, dims);
-    const p1 = Geometry.pixelPosToClipPos(.{ .x = x + w, .y = y }, dims);
-    const p2 = Geometry.pixelPosToClipPos(.{ .x = x + w, .y = y + h }, dims);
-    const p3 = Geometry.pixelPosToClipPos(.{ .x = x, .y = y + h }, dims);
-    // draw filled rectangle
+fn drawQuad(color: u32, rect: ClipRect) void {
     sgl.c1i(color);
     sgl.beginQuads();
-    sgl.v2f(p0.x, p0.y);
-    sgl.v2f(p1.x, p1.y);
-    sgl.v2f(p2.x, p2.y);
-    sgl.v2f(p3.x, p3.y);
+    sgl.v2f(rect.x, rect.y);
+    sgl.v2f(rect.x + rect.w, rect.y);
+    sgl.v2f(rect.x + rect.w, rect.y + rect.h);
+    sgl.v2f(rect.x, rect.y + rect.h);
     sgl.end();
 }

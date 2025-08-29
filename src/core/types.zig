@@ -39,3 +39,11 @@ pub const ClipPos = struct {
     x: f32,
     y: f32,
 };
+
+pub const ClipRect = struct {
+    // a rectangle in clip space
+    x: f32,
+    y: f32,
+    h: f32,
+    w: f32,
+};
