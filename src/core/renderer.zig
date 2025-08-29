@@ -48,7 +48,7 @@ pub const Renderer = struct {
         sgfx.commit();
     }
 
-    pub fn draw(self: *Renderer, doc: *Document, layout: *const Layout) !void {
+    pub fn draw(self: *Renderer, doc: *Document, layout: *const Layout, draw_caret: bool) !void {
         const rows = layout.lines.len;
         const cols = layout.width;
         if (rows == 0 or cols == 0) return;
@@ -72,6 +72,7 @@ pub const Renderer = struct {
         }
         sdtx.draw();
         // draw the caret
+        if (!draw_caret) return;
         // sgl operates in clip space, so translate from the pixels we used in sdtx
         if (layout.caret) |caret| {
             const cell_size: f32 = 8.0;

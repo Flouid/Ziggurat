@@ -21,6 +21,10 @@ const App = struct {
     // for rebuilding frames only after changes
     dirty: bool = false,
     cached_layout: Layout = undefined,
+    // for blinking caret
+    blink_accum_ns: u64 = 0,
+    blink_period_ns: u64 = std.time.ns_per_s,
+    last_tick_ns: u64 = 0,
 
     fn init(self: *App) !void {
         const gpa = self.gpa.allocator();
@@ -56,6 +60,8 @@ const App = struct {
         self.arena = std.heap.ArenaAllocator.init(gpa);
         // cache initial layout on open
         try self.refreshLayout();
+        // initialize caret blink timer
+        self.last_tick_ns = @intCast(std.time.nanoTimestamp());
     }
 
     fn deinit(self: *App) void {
@@ -66,6 +72,12 @@ const App = struct {
     }
 
     fn frame(self: *App) !void {
+        // manage caret blinking
+        const now: u64 = @intCast(std.time.nanoTimestamp());
+        const dt = now - self.last_tick_ns;
+        self.last_tick_ns = now;
+        self.blink_accum_ns = (self.blink_accum_ns + dt) % self.blink_period_ns;
+        const draw_caret = self.blink_accum_ns < self.blink_period_ns / 2;
         // calculating dimensions per frame natively supports resizing
         const dims = windowCells(self.geometry);
         self.vp.resize(dims.h, dims.w);
@@ -76,7 +88,7 @@ const App = struct {
         }
         // render frame
         self.renderer.beginFrame();
-        try self.renderer.draw(&self.doc, &self.cached_layout);
+        try self.renderer.draw(&self.doc, &self.cached_layout, draw_caret);
         self.renderer.endFrame();
     }
 
@@ -145,6 +157,7 @@ fn event_cb(ev: [*c]const sapp.Event) callconv(.c) void {
     }
     // if here, the command was NOT a noop, refresh the cached layout on next frame
     G.dirty = true;
+    G.blink_accum_ns = 0;
 }
 
 pub fn run(path: ?[]const u8) !void {
