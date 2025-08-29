@@ -19,8 +19,8 @@ pub const Viewport = struct {
         // adjust the viewport so the caret always remains visible
         if (self.height == 0 or self.width == 0) return;
         // caret may hug top edge
-        if (caret.line < self.top_line) {
-            self.top_line = caret.line;
+        if (caret.line < self.top_line + self.caret_margin) {
+            self.top_line = if (caret.line < self.caret_margin) 0 else caret.line - self.caret_margin;
         }
         // try to keep bottom some distance from caret
         const bottom_edge = self.top_line + (self.height - 1);
@@ -31,8 +31,8 @@ pub const Viewport = struct {
             self.top_line = @min(top, max_top);
         }
         // caret may hug left edge
-        if (caret.col < self.left_col) {
-            self.left_col = caret.col;
+        if (caret.col < self.left_col + self.caret_margin) {
+            self.left_col = if (caret.col < self.caret_margin) 0 else caret.col - self.caret_margin;
         }
         // try to keep right edge some distance from caret
         const right_edge = self.left_col + (self.width - 1);
