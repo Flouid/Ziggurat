@@ -13,9 +13,21 @@ pub const Renderer = struct {
     theme: Theme,
     alloc: std.mem.Allocator,
     line_buffer: []u8 = &[_]u8{},
+    // cache colors in the form they'll be handed to sokol
+    background: sgfx.Color,
+    foreground: u32,
+    caret: u32,
+    highlight: u32,
 
     pub fn init(alloc: std.mem.Allocator, theme: Theme) Renderer {
-        const renderer = Renderer{ .theme = theme, .alloc = alloc };
+        const renderer = Renderer{
+            .theme = theme,
+            .alloc = alloc,
+            .background = toColor(theme.background),
+            .foreground = rgbaToAbgr(theme.foreground),
+            .caret = rgbaToAbgr(theme.caret),
+            .highlight = rgbaToAbgr(theme.highlight),
+        };
         sgfx.setup(.{ .environment = sglue.environment() });
         sdtx.setup(.{
             .fonts = .{ sdtx.fontKc853(), .{}, .{}, .{}, .{}, .{}, .{}, .{} },
@@ -36,7 +48,7 @@ pub const Renderer = struct {
     pub fn beginFrame(self: *const Renderer) void {
         const pass = sgfx.Pass{
             .action = .{
-                .colors = .{ .{ .load_action = .CLEAR, .clear_value = toColor(self.theme.background) }, .{}, .{}, .{} },
+                .colors = .{ .{ .load_action = .CLEAR, .clear_value = self.background }, .{}, .{}, .{} },
             },
             .swapchain = sglue.swapchain(),
         };
@@ -57,7 +69,7 @@ pub const Renderer = struct {
         sdtx.canvas(appDims.x, appDims.y);
         sdtx.origin(self.theme.pad_x, self.theme.pad_y);
         sdtx.home();
-        sdtx.color1i(rgbaToAbgr(self.theme.foreground)); // nasty RGBA vs ABGR footgun
+        sdtx.color1i(self.foreground);
         // allocate a per-frame line buffer, allows sentintel terminated strings
         try self.ensureLineBuffer(cols + 1);
         // materialize the doc lines directly into sokol's debugtext
@@ -86,7 +98,7 @@ pub const Renderer = struct {
             const p2 = px_to_ndc(x + w, y + h, appDims);
             const p3 = px_to_ndc(x, y + h, appDims);
             // draw filled rectangle for the caret
-            sgl.c1i(self.theme.caret);
+            sgl.c1i(self.caret);
             sgl.beginQuads();
             sgl.v2f(p0.x, p0.y);
             sgl.v2f(p1.x, p1.y);
@@ -110,9 +122,10 @@ pub const Renderer = struct {
 pub const Theme = struct {
     // colors stored as packed 32-bit integers in RGBA order
     // for example, 0xRRGGBBAA
-    background: u32,
-    foreground: u32,
-    caret: u32,
+    background: u32 = 0x242936FF,
+    foreground: u32 = 0xcccac2FF,
+    caret: u32 = 0xffcc66FF,
+    highlight: u32 = 0x409fff40,
     // number of TEXT CELLS to pad x and y around the borders
     pad_x: f32,
     pad_y: f32,

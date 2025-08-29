@@ -19,7 +19,7 @@ pub const Geometry = struct {
         const row_offset: usize = if (y < 0) 0 else @intFromFloat(@divFloor(y, self.cell_h_px));
         // clamp row to document length
         var line = vp.top_line + row_offset;
-        if (line > doc.lineCount()) line = doc.lineCount();
+        if (line >= doc.lineCount()) line = doc.lineCount() - 1;
         // clamp col to line length
         const span = try doc.lineSpan(line);
         var col = vp.left_col + col_offset;

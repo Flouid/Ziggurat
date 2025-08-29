@@ -50,9 +50,6 @@ const App = struct {
         self.controller = .{ .doc = &self.doc, .vp = &self.vp, .geom = &self.geometry };
         // initialize renderer
         self.renderer = Renderer.init(gpa, .{
-            .background = 0x000000FF,
-            .foreground = 0xFFFFFFFF,
-            .caret = 0xFFFFFFFF,
             .pad_x = self.geometry.pad_x_cells,
             .pad_y = self.geometry.pad_y_cells,
         });
