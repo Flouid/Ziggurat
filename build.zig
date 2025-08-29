@@ -122,24 +122,6 @@ fn addCoreModules(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std
         .optimize = optimize,
     });
 
-    const renderer_mod = b.addModule("renderer", .{
-        .root_source_file = b.path("src/core/renderer.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "debug", .module = debug_mod },
-            .{ .name = "sokol", .module = dep_sokol.module("sokol") },
-            .{ .name = "document", .module = doc_mod },
-            .{ .name = "layout", .module = layout_mod },
-        },
-    });
-
-    const file_io_mod = b.addModule("file_io", .{
-        .root_source_file = b.path("src/core/file_io.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-
     const geom_mod = b.addModule("geometry", .{
         .root_source_file = b.path("src/core/geometry.zig"),
         .target = target,
@@ -149,6 +131,26 @@ fn addCoreModules(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std
             .{ .name = "viewport", .module = viewport_mod },
             .{ .name = "types", .module = types_mod },
         },
+    });
+
+    const renderer_mod = b.addModule("renderer", .{
+        .root_source_file = b.path("src/core/renderer.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "debug", .module = debug_mod },
+            .{ .name = "sokol", .module = dep_sokol.module("sokol") },
+            .{ .name = "document", .module = doc_mod },
+            .{ .name = "layout", .module = layout_mod },
+            .{ .name = "geometry", .module = geom_mod },
+            .{ .name = "types", .module = types_mod },
+        },
+    });
+
+    const file_io_mod = b.addModule("file_io", .{
+        .root_source_file = b.path("src/core/file_io.zig"),
+        .target = target,
+        .optimize = optimize,
     });
 
     const controller_mod = b.addModule("controller", .{

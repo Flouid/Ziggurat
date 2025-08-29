@@ -49,10 +49,7 @@ const App = struct {
         // initialize controller
         self.controller = .{ .doc = &self.doc, .vp = &self.vp, .geom = &self.geometry };
         // initialize renderer
-        self.renderer = Renderer.init(gpa, .{
-            .pad_x = self.geometry.pad_x_cells,
-            .pad_y = self.geometry.pad_y_cells,
-        });
+        self.renderer = Renderer.init(gpa, .{}, self.geometry);
         // initialize arena for rendering each frame
         self.arena = std.heap.ArenaAllocator.init(gpa);
         // cache initial layout on open

@@ -2,12 +2,8 @@ const std = @import("std");
 const Document = @import("document").Document;
 const Viewport = @import("viewport").Viewport;
 const TextPos = @import("types").TextPos;
+const ScreenPos = @import("types").ScreenPos;
 const Span = @import("types").Span;
-
-pub const ScreenPos = struct {
-    row: usize,
-    col: usize,
-};
 
 pub const Layout = struct {
     first_row: usize,
@@ -39,10 +35,10 @@ pub const Layout = struct {
 
 pub fn textPosToScreenPos(tp: TextPos, vp: *const Viewport) ?ScreenPos {
     if (vp.height == 0 or vp.width == 0) return null;
-    if (tp.line < vp.top_line or tp.line >= vp.top_line + vp.height) return null;
+    if (tp.row < vp.top_line or tp.row >= vp.top_line + vp.height) return null;
     if (tp.col < vp.left_col or tp.col >= vp.left_col + vp.width) return null;
     return .{
-        .row = tp.line - vp.top_line,
+        .row = tp.row - vp.top_line,
         .col = tp.col - vp.left_col,
     };
 }
@@ -106,9 +102,9 @@ test "Layout: last line with no trailing newline" {
 
 test "textPosToScreenPos: null when caret is off-screen" {
     var vp = Viewport{ .top_line = 10, .left_col = 20, .height = 3, .width = 5 };
-    const tp1 = TextPos{ .line = 9, .col = 20 };
-    const tp2 = TextPos{ .line = 10, .col = 19 };
-    const tp3 = TextPos{ .line = 13, .col = 24 };
+    const tp1 = TextPos{ .row = 9, .col = 20 };
+    const tp2 = TextPos{ .row = 10, .col = 19 };
+    const tp3 = TextPos{ .row = 13, .col = 24 };
     try std.testing.expect(textPosToScreenPos(tp1, &vp) == null);
     try std.testing.expect(textPosToScreenPos(tp2, &vp) == null);
     try std.testing.expect(textPosToScreenPos(tp3, &vp) == null);
@@ -116,7 +112,7 @@ test "textPosToScreenPos: null when caret is off-screen" {
 
 test "textPosToScreenPos: maps visible caret to screen coords" {
     var vp = Viewport{ .top_line = 10, .left_col = 20, .height = 3, .width = 5 };
-    const tp = TextPos{ .line = 11, .col = 22 };
+    const tp = TextPos{ .row = 11, .col = 22 };
     const sp = textPosToScreenPos(tp, &vp).?;
     try std.testing.expectEqual(@as(usize, 1), sp.row);
     try std.testing.expectEqual(@as(usize, 2), sp.col);

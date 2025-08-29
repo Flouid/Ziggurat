@@ -2,6 +2,8 @@ const std = @import("std");
 const Document = @import("document").Document;
 const Viewport = @import("viewport").Viewport;
 const TextPos = @import("types").TextPos;
+const ScreenPos = @import("types").ScreenPos;
+const PixelPos = @import("types").PixelPos;
 
 pub const Geometry = struct {
     cell_w_px: f32,
@@ -18,12 +20,18 @@ pub const Geometry = struct {
         const col_offset: usize = if (x < 0) 0 else @intFromFloat(std.math.round(x / self.cell_w_px));
         const row_offset: usize = if (y < 0) 0 else @intFromFloat(@divFloor(y, self.cell_h_px));
         // clamp row to document length
-        var line = vp.top_line + row_offset;
-        if (line >= doc.lineCount()) line = doc.lineCount() - 1;
+        var row = vp.top_line + row_offset;
+        if (row >= doc.lineCount()) row = doc.lineCount() - 1;
         // clamp col to line length
-        const span = try doc.lineSpan(line);
+        const span = try doc.lineSpan(row);
         var col = vp.left_col + col_offset;
         if (col > span.len) col = span.len;
-        return .{ .line = line, .col = col };
+        return .{ .row = row, .col = col };
+    }
+
+    pub fn screenPosToPixelPos(self: *Geometry, pos: ScreenPos) PixelPos {
+        const x = (self.pad_x_cells + @as(f32, @floatFromInt(pos.col))) * self.cell_w_px;
+        const y = (self.pad_y_cells + @as(f32, @floatFromInt(pos.row))) * self.cell_h_px;
+        return .{ .x = x, .y = y };
     }
 };

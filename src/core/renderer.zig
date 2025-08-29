@@ -2,6 +2,9 @@ const std = @import("std");
 const debug = @import("debug");
 const Document = @import("document").Document;
 const Layout = @import("layout").Layout;
+const Geometry = @import("geometry").Geometry;
+const PixelPos = @import("types").PixelPos;
+const ClipPos = @import("types").ClipPos;
 const sokol = @import("sokol");
 const sapp = sokol.app;
 const sgfx = sokol.gfx;
@@ -9,20 +12,31 @@ const sdtx = sokol.debugtext;
 const sgl = sokol.gl;
 const sglue = sokol.glue;
 
+pub const Theme = struct {
+    // colors stored as packed 32-bit integers in RGBA order
+    // for example, 0xRRGGBBAA
+    background: u32 = 0x242936FF,
+    foreground: u32 = 0xcccac2FF,
+    caret: u32 = 0xffcc66FF,
+    highlight: u32 = 0x409fff40,
+};
+
 pub const Renderer = struct {
     theme: Theme,
     alloc: std.mem.Allocator,
     line_buffer: []u8 = &[_]u8{},
+    geom: Geometry,
     // cache colors in the form they'll be handed to sokol
     background: sgfx.Color,
     foreground: u32,
     caret: u32,
     highlight: u32,
 
-    pub fn init(alloc: std.mem.Allocator, theme: Theme) Renderer {
+    pub fn init(alloc: std.mem.Allocator, theme: Theme, geometry: Geometry) Renderer {
         const renderer = Renderer{
             .theme = theme,
             .alloc = alloc,
+            .geom = geometry,
             .background = toColor(theme.background),
             .foreground = rgbaToAbgr(theme.foreground),
             .caret = rgbaToAbgr(theme.caret),
@@ -65,9 +79,9 @@ pub const Renderer = struct {
         const cols = layout.width;
         if (rows == 0 or cols == 0) return;
         // set positions, create canvas, set text color
-        const appDims = Dimensions{ .x = @floatFromInt(sapp.width()), .y = @floatFromInt(sapp.height()) };
+        const appDims: PixelPos = .{ .x = @floatFromInt(sapp.width()), .y = @floatFromInt(sapp.height()) };
         sdtx.canvas(appDims.x, appDims.y);
-        sdtx.origin(self.theme.pad_x, self.theme.pad_y);
+        sdtx.origin(self.geom.pad_x_cells, self.geom.pad_y_cells);
         sdtx.home();
         sdtx.color1i(self.foreground);
         // allocate a per-frame line buffer, allows sentintel terminated strings
@@ -87,24 +101,10 @@ pub const Renderer = struct {
         if (!draw_caret) return;
         // sgl operates in clip space, so translate from the pixels we used in sdtx
         if (layout.caret) |caret| {
-            const cell_size: f32 = 8.0;
-            const x = (self.theme.pad_x + @as(f32, @floatFromInt(caret.col))) * cell_size;
-            const y = (self.theme.pad_y + @as(f32, @floatFromInt(caret.row))) * cell_size;
-            const h = cell_size;
-            const w = cell_size / 4;
-            // calculate vertices in clip space
-            const p0 = px_to_ndc(x, y, appDims);
-            const p1 = px_to_ndc(x + w, y, appDims);
-            const p2 = px_to_ndc(x + w, y + h, appDims);
-            const p3 = px_to_ndc(x, y + h, appDims);
-            // draw filled rectangle for the caret
-            sgl.c1i(self.caret);
-            sgl.beginQuads();
-            sgl.v2f(p0.x, p0.y);
-            sgl.v2f(p1.x, p1.y);
-            sgl.v2f(p2.x, p2.y);
-            sgl.v2f(p3.x, p3.y);
-            sgl.end();
+            const pos = self.geom.screenPosToPixelPos(caret);
+            const h = self.geom.cell_h_px;
+            const w = self.geom.cell_w_px / 4;
+            drawQuad(appDims, self.caret, pos.x, pos.y, h, w);
             sgl.draw();
         }
     }
@@ -117,18 +117,6 @@ pub const Renderer = struct {
             self.line_buffer = try self.alloc.realloc(self.line_buffer, want);
         }
     }
-};
-
-pub const Theme = struct {
-    // colors stored as packed 32-bit integers in RGBA order
-    // for example, 0xRRGGBBAA
-    background: u32 = 0x242936FF,
-    foreground: u32 = 0xcccac2FF,
-    caret: u32 = 0xffcc66FF,
-    highlight: u32 = 0x409fff40,
-    // number of TEXT CELLS to pad x and y around the borders
-    pad_x: f32,
-    pad_y: f32,
 };
 
 const SdtxWriter = struct {
@@ -154,11 +142,6 @@ const SdtxWriter = struct {
     }
 };
 
-const Dimensions = struct {
-    x: f32,
-    y: f32,
-};
-
 fn rgbaToAbgr(rgba: u32) u32 {
     // for some absurd reason, some sokol functions take RGBA and others take ABGR...
     const r: u32 = (rgba >> 24) & 0xFF;
@@ -177,10 +160,26 @@ fn toColor(rgba: u32) sgfx.Color {
     return .{ .r = r, .g = g, .b = b, .a = a };
 }
 
-fn px_to_ndc(x_px: f32, y_px: f32, appDims: Dimensions) Dimensions {
+fn px_to_ndc(x_px: f32, y_px: f32, appDims: PixelPos) ClipPos {
     // translate pixel space to clip space
     return .{
         .x = (x_px / appDims.x) * 2.0 - 1.0,
         .y = 1.0 - (y_px / appDims.y) * 2.0,
     };
+}
+
+fn drawQuad(appDims: PixelPos, color: u32, x: f32, y: f32, h: f32, w: f32) void {
+    // calculate vertices in clip space
+    const p0 = px_to_ndc(x, y, appDims);
+    const p1 = px_to_ndc(x + w, y, appDims);
+    const p2 = px_to_ndc(x + w, y + h, appDims);
+    const p3 = px_to_ndc(x, y + h, appDims);
+    // draw filled rectangle
+    sgl.c1i(color);
+    sgl.beginQuads();
+    sgl.v2f(p0.x, p0.y);
+    sgl.v2f(p1.x, p1.y);
+    sgl.v2f(p2.x, p2.y);
+    sgl.v2f(p3.x, p3.y);
+    sgl.end();
 }
