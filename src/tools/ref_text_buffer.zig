@@ -37,7 +37,7 @@ pub const TextBuffer = struct {
     alloc: std.mem.Allocator,
 
     pub fn init(alloc: std.mem.Allocator, original: []const u8) error{OutOfMemory}!TextBuffer {
-        var table = TextBuffer{ .original = original, .doc_len = original.len, .alloc = alloc};
+        var table = TextBuffer{ .original = original, .doc_len = original.len, .alloc = alloc };
         if (original.len == 0) return table; // empty document, no pieces
         try table.pieces.append(alloc, .{ .buf = .Original, .off = 0, .len = original.len });
         try table.prefix.append(alloc, 0);
@@ -89,10 +89,16 @@ pub const TextBuffer = struct {
         // build 1-3 replacement pieces and insert them into the piece table
         var buf: [3]Piece = undefined;
         var n: usize = 0;
-        if (prefix.len != 0) { buf[n] = prefix; n += 1; }
+        if (prefix.len != 0) {
+            buf[n] = prefix;
+            n += 1;
+        }
         buf[n] = .{ .buf = .Add, .off = add_offset, .len = text.len };
         n += 1;
-        if (posfix.len != 0) { buf[n] = posfix; n += 1; }
+        if (posfix.len != 0) {
+            buf[n] = posfix;
+            n += 1;
+        }
         self.pieces.items[idx] = buf[0];
         if (n >= 2) try self.pieces.insertSlice(self.alloc, idx + 1, buf[1..n]);
         self.doc_len += text.len;
@@ -113,11 +119,18 @@ pub const TextBuffer = struct {
         if (count <= old.len - len_prefix) {
             const len_posfix = old.len - len_prefix - count;
             // delete the entire piece
-            if (len_prefix == 0 and len_posfix == 0) { _ = self.pieces.orderedRemove(idx);}
+            if (len_prefix == 0 and len_posfix == 0) {
+                _ = self.pieces.orderedRemove(idx);
+            }
             // keep just the prefix
-            else if (len_prefix > 0 and len_posfix == 0) { old.len = len_prefix; }
+            else if (len_prefix > 0 and len_posfix == 0) {
+                old.len = len_prefix;
+            }
             // keep just the posfix
-            else if (len_prefix == 0 and len_posfix > 0) { old.off += count; old.len = len_posfix; }
+            else if (len_prefix == 0 and len_posfix > 0) {
+                old.off += count;
+                old.len = len_posfix;
+            }
             // split piece into prefix and posfix
             else {
                 old.len = len_prefix;
@@ -132,7 +145,7 @@ pub const TextBuffer = struct {
             if (len_prefix == 0) {
                 remain -= old.len;
                 _ = self.pieces.orderedRemove(idx);
-            // general case: some prefix is left over, modify the current piece in-place
+                // general case: some prefix is left over, modify the current piece in-place
             } else {
                 remain -= old.len - len_prefix;
                 old.len = len_prefix;
@@ -169,7 +182,7 @@ pub const TextBuffer = struct {
         for (self.pieces.items) |piece| {
             const src = switch (piece.buf) {
                 .Original => self.original,
-                .Add      => self.add.items,
+                .Add => self.add.items,
             };
             debug.dassert(piece.off <= src.len, "piece offset must be inside it's source buffer");
             debug.dassert(piece.len <= src.len - piece.off, "full piece slice must be inside source buffer");
@@ -224,7 +237,10 @@ pub const TextBuffer = struct {
         // given a "center" index, attempt to merge it's left and right neighbors
         debug.dassert(idx < self.pieces.items.len, "merge index must be inside piece table");
         var i = idx;
-        if (i > 0 and self.canMerge(i - 1, i)) { self.merge(i - 1, i); i -= 1; }
+        if (i > 0 and self.canMerge(i - 1, i)) {
+            self.merge(i - 1, i);
+            i -= 1;
+        }
         if (i + 1 < self.pieces.items.len and self.canMerge(i, i + 1)) self.merge(i, i + 1);
         // the center index might have changed, so return it for rebuilding the prefix
         return i;
