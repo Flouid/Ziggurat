@@ -67,8 +67,6 @@ const App = struct {
         self.last_tick_ns = now;
         self.blink_accum_ns = (self.blink_accum_ns + dt) % self.blink_period_ns;
         const draw_caret = self.blink_accum_ns < self.blink_period_ns / 2;
-        // calculating dimensions per frame natively supports resizing
-        self.vp.resize(self.getScreenDims());
         // rebuild the layout if an edit occured since last frame
         if (self.dirty) {
             self.dirty = false;
@@ -134,6 +132,7 @@ fn event_cb(ev: [*c]const sapp.Event) callconv(.c) void {
             std.log.err("failed to save document: {s}\n", .{@errorName(e)});
         },
         .exit => sapp.requestQuit(),
+        .resize => G.vp.resize(G.getScreenDims()),
         .noop => return,
         else => {},
     }

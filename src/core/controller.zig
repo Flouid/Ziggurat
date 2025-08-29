@@ -11,8 +11,9 @@ const REVERSE_DIR = true;
 pub const Command = union(enum) {
     save,
     exit,
-    noop,
     edit,
+    resize,
+    noop,
 };
 
 pub const Controller = struct {
@@ -89,7 +90,7 @@ pub const Controller = struct {
                 if (!self.vp.scrollBy(d_lines, d_cols, n_lines, n_cols)) return .noop;
                 return .edit;
             },
-            .RESIZED => return .edit,
+            .RESIZED => return .resize,
             else => return .noop,
         }
         // unless skipped via early return, ensure the caret is visible
