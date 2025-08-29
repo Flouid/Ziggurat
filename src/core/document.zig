@@ -20,6 +20,7 @@ pub const Caret = struct {
 pub const Document = struct {
     buffer: TextBuffer,
     caret: Caret,
+    anchor: ?Caret = null,
     owned_src: []const u8,
     alloc: std.mem.Allocator,
     max_cols: usize = 0,
@@ -60,6 +61,8 @@ pub const Document = struct {
 
     pub fn caretInsert(self: *Document, text: []const u8) error{OutOfMemory}!void {
         debug.dassert(text.len > 0, "cannot insert empty text at cursor");
+        // when there is a selection, delete the selected range prior to insertion
+        if (self.hasSelection()) try self.caretBackspace();
         // update the text buffer
         try self.buffer.insert(self.caret.byte, text);
         // update the cursor cheaply
@@ -78,12 +81,17 @@ pub const Document = struct {
         c.preferred_col = c.pos.col;
     }
 
-    pub fn caretBackspace(self: *Document, n: usize) error{OutOfMemory}!void {
-        debug.dassert(n > 0, "cannot delete nothing at cursor");
-        const c = &self.caret;
+    pub fn caretBackspace(self: *Document) error{OutOfMemory}!void {
+        // default case, delete from the caret and one at a time
+        var c = self.caret;
+        var take: usize = 1;
+        if (self.selectionSpan()) |span| {
+            // if caret is behind span start, delete from the start instead
+            if (self.anchor.?.byte > c.byte) c = self.anchor.?;
+            take = span.len;
+        }
         // if the cursor is at the start of the document, silently do nothing
         if (c.byte == 0) return;
-        const take = @min(n, c.byte);
         const start = c.byte - take;
         // use a slice iterator to look at what's getting deleted and count newlines
         var it = self.buffer.getSliceIter(start, take);
@@ -101,6 +109,8 @@ pub const Document = struct {
             c.pos.col = c.byte - line_start;
         }
         c.preferred_col = c.pos.col;
+        self.caret = c;
+        self.resetSelection();
     }
 
     // cursor traversal
@@ -176,6 +186,29 @@ pub const Document = struct {
         const span = try self.lineSpan(c.pos.line);
         c.pos.col = @min(c.preferred_col, span.len);
         c.byte = span.start + c.pos.col;
+    }
+
+    // selection handling
+
+    pub fn startSelection(self: *Document) void {
+        self.anchor = self.caret;
+    }
+
+    pub fn resetSelection(self: *Document) void {
+        self.anchor = null;
+    }
+
+    pub fn hasSelection(self: *const Document) bool {
+        return (self.anchor != null and self.anchor.?.byte != self.caret.byte);
+    }
+
+    pub fn selectionSpan(self: *const Document) ?Span {
+        if (!self.hasSelection()) return null;
+        const a = self.anchor.?.byte;
+        const b = self.caret.byte;
+        const start = if (a < b) a else b;
+        const len = if (a < b) b - a else a - b;
+        return .{ .start = start, .len = len };
     }
 
     // materialization and span generation

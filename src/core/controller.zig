@@ -36,14 +36,21 @@ pub const Controller = struct {
                 if (modifiers.ctrl and key == .D) return .exit;
 
                 switch (key) {
-                    .RIGHT => try self.doc.moveRight(),
-                    .LEFT => try self.doc.moveLeft(),
-                    .DOWN => try self.doc.moveDown(),
-                    .UP => try self.doc.moveUp(),
-                    .HOME => try self.doc.moveHome(),
-                    .END => try self.doc.moveEnd(),
-                    .BACKSPACE => try self.doc.caretBackspace(1),
+                    .RIGHT => try traverseWithModifiers(self.doc, modifiers, Document.moveRight),
+                    .LEFT => try traverseWithModifiers(self.doc, modifiers, Document.moveLeft),
+                    .DOWN => try traverseWithModifiers(self.doc, modifiers, Document.moveDown),
+                    .UP => try traverseWithModifiers(self.doc, modifiers, Document.moveUp),
+                    // TODO: fix home and end, on my machine the events are KP_1 and KP_7 with or without numlock
+                    .HOME => try traverseWithModifiers(self.doc, modifiers, Document.moveHome),
+                    .END => try traverseWithModifiers(self.doc, modifiers, Document.moveEnd),
+                    .BACKSPACE => try self.doc.caretBackspace(),
                     .ENTER => try self.doc.caretInsert("\n"),
+                    .ESCAPE => {
+                        if (self.doc.hasSelection()) {
+                            self.doc.resetSelection();
+                            return .edit;
+                        } else return .noop;
+                    },
                     else => return .noop,
                 }
             },
@@ -109,4 +116,10 @@ fn modifiersOf(ev: [*c]const sapp.Event) Modifiers {
         .alt = (m & sapp.modifier_alt) != 0,
         .super = (m & sapp.modifier_super) != 0,
     };
+}
+
+fn traverseWithModifiers(doc: *Document, modifiers: Modifiers, comptime traverse: fn (*Document) error{OutOfMemory}!void) !void {
+    if (modifiers.shift and !doc.hasSelection()) doc.startSelection();
+    if (!modifiers.shift) doc.resetSelection();
+    try traverse(doc);
 }
