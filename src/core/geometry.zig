@@ -34,14 +34,13 @@ pub const Geometry = struct {
     }
 
     pub fn screenRowToClipRect(self: *const Geometry, row: usize, l_col: usize, r_col: usize, dims: Types.PixelDims) Types.ClipRect {
-        const x0_px: f32 = (self.pad_x_cells + @as(f32, @floatFromInt(l_col))) * self.cell_w_px;
-        const y0_px: f32 = (self.pad_y_cells + @as(f32, @floatFromInt(row))) * self.cell_h_px;
+        const x_px: f32 = (self.pad_x_cells + @as(f32, @floatFromInt(l_col))) * self.cell_w_px;
+        const y_px: f32 = (self.pad_y_cells + @as(f32, @floatFromInt(row))) * self.cell_h_px;
         const w_px: f32 = (@as(f32, @floatFromInt(r_col - l_col))) * self.cell_w_px;
-        const h_px: f32 = self.cell_h_px;
-        const x_clip = (x0_px / dims.w) * 2.0 - 1.0;
-        const y_clip = 1.0 - (y0_px / dims.h) * 2.0;
+        const x_clip = (x_px / dims.w) * 2.0 - 1.0;
+        const y_clip = 1.0 - (y_px / dims.h) * 2.0;
         const w_clip = (w_px / dims.w) * 2.0;
-        const h_clip = -(h_px / dims.h) * 2.0;
+        const h_clip = -(self.cell_h_px / dims.h) * 2.0;
         return .{ .x = x_clip, .y = y_clip, .w = w_clip, .h = h_clip };
     }
 

@@ -35,17 +35,10 @@ pub const Renderer = struct {
     foreground: u32,
     caret: u32,
     highlight: u32,
+    // default sgl doesn't handle alpha correctly
+    quad_pip: sgl.Pipeline,
 
     pub fn init(alloc: std.mem.Allocator, theme: Theme, geometry: Geometry) Renderer {
-        const renderer = Renderer{
-            .theme = theme,
-            .alloc = alloc,
-            .geom = geometry,
-            .background = toColor(theme.background),
-            .foreground = rgbaToAbgr(theme.foreground),
-            .caret = rgbaToAbgr(theme.caret),
-            .highlight = rgbaToAbgr(theme.highlight),
-        };
         sgfx.setup(.{ .environment = sglue.environment() });
         sdtx.setup(.{
             .fonts = .{ sdtx.fontKc853(), .{}, .{}, .{}, .{}, .{}, .{}, .{} },
@@ -53,7 +46,30 @@ pub const Renderer = struct {
         });
         sdtx.font(0);
         sgl.setup(.{});
-        return renderer;
+        var pip_desc: sgfx.PipelineDesc = .{};
+        pip_desc.colors[0].blend = .{
+            .enabled = true,
+            .src_factor_rgb = .SRC_ALPHA,
+            .dst_factor_rgb = .ONE_MINUS_SRC_ALPHA,
+            .op_rgb = .ADD,
+            .src_factor_alpha = .ONE,
+            .dst_factor_alpha = .ONE_MINUS_SRC_ALPHA,
+            .op_alpha = .ADD,
+        };
+        pip_desc.depth.compare = .ALWAYS;
+        pip_desc.depth.write_enabled = false;
+        pip_desc.cull_mode = .NONE;
+        const quad_pip = sgl.makePipeline(pip_desc);
+        return Renderer{
+            .theme = theme,
+            .alloc = alloc,
+            .geom = geometry,
+            .background = toColor(theme.background),
+            .foreground = rgbaToAbgr(theme.foreground),
+            .caret = rgbaToAbgr(theme.caret),
+            .highlight = rgbaToAbgr(theme.highlight),
+            .quad_pip = quad_pip,
+        };
     }
 
     pub fn deinit(self: *Renderer) void {
@@ -71,6 +87,7 @@ pub const Renderer = struct {
             .swapchain = sglue.swapchain(),
         };
         sgfx.beginPass(pass);
+        sgl.loadPipeline(self.quad_pip);
     }
 
     pub fn endFrame(_: *const Renderer) void {
@@ -101,20 +118,22 @@ pub const Renderer = struct {
         }
         sdtx.draw();
         // draw a highlight around the selection if it exists
+        var draw_sgl = false;
         if (doc.hasSelection()) {
+            draw_sgl = true;
             var it = SelectionIter.init(doc, layout, &self.geom, dims);
             drawQuads(self.highlight, &it);
-            sgl.draw();
         }
         // draw the caret
-        if (!draw_caret) return;
-        if (layout.caret) |caret| {
+        if (draw_caret and layout.caret != null) {
+            draw_sgl = true;
+            const caret = layout.caret.?;
             const pos = self.geom.screenPosToPixelPos(caret);
             const off: PixelPos = .{ .x = self.geom.cell_w_px / 4, .y = self.geom.cell_h_px };
             const rect = Geometry.pixelPosToClipRect(pos, off, dims);
             drawQuad(self.caret, rect);
-            sgl.draw();
         }
+        if (draw_sgl) sgl.draw();
     }
 
     fn ensureLineBuffer(self: *Renderer, want: usize) !void {
@@ -200,13 +219,13 @@ const SelectionIter = struct {
         // loop so lines with nothing visible can be skipped
         while (self.i < self.layout.lines.len) {
             self.i += 1;
-            const row = self.layout.lines[self.i-1];
+            const row = self.layout.lines[self.i - 1];
             const start: usize = @max(sel.start, row.start);
             const end: usize = @min(sel.end(), row.end());
-            if (end <= start) continue; 
+            if (end <= start) continue;
             const l_col = start - row.start;
             const r_col = end - row.start;
-            const rect = self.geom.screenRowToClipRect(self.i-1, l_col, r_col, self.dims);
+            const rect = self.geom.screenRowToClipRect(self.i - 1, l_col, r_col, self.dims);
             return rect;
         }
         return null;

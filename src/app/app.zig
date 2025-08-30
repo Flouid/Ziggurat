@@ -106,14 +106,14 @@ var G: App = .{ .gpa = std.heap.GeneralPurposeAllocator(.{}){} };
 
 fn init_cb() callconv(.c) void {
     G.init() catch |e| {
-        std.log.err("init failed: {s}\n", .{@errorName(e)});
+        std.log.err("init failed: {t}\n", .{e});
         sapp.requestQuit();
     };
 }
 
 fn frame_cb() callconv(.c) void {
     G.frame() catch |e| {
-        std.log.err("failure when rendering frame: {s}\n", .{@errorName(e)});
+        std.log.err("failure when rendering frame: {t}\n", .{e});
         sapp.requestQuit();
     };
 }
@@ -124,12 +124,12 @@ fn cleanup_cb() callconv(.c) void {
 
 fn event_cb(ev: [*c]const sapp.Event) callconv(.c) void {
     const command = G.controller.onEvent(ev) catch |e| blk: {
-        std.log.err("error handling event: {s}\n", .{@errorName(e)});
+        std.log.err("error handling event: {t}\n", .{e});
         break :blk .exit;
     };
     switch (command) {
         .save => G.save() catch |e| {
-            std.log.err("failed to save document: {s}\n", .{@errorName(e)});
+            std.log.err("failed to save document: {t}\n", .{e});
         },
         .exit => sapp.requestQuit(),
         .resize => G.vp.resize(G.getScreenDims()),
