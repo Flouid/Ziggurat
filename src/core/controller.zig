@@ -53,7 +53,16 @@ pub const Controller = struct {
                     // TODO: fix home and end, on my machine the events are KP_1 and KP_7 with or without numlock
                     .HOME => try traverseWithModifiers(self.doc, modifiers, Document.moveHome),
                     .END => try traverseWithModifiers(self.doc, modifiers, Document.moveEnd),
-                    .BACKSPACE => try self.doc.caretBackspace(),
+                    .BACKSPACE => {
+                        if (modifiers.ctrl) {
+                            try self.doc.deleteWordLeft();
+                        } else try self.doc.caretBackspace();
+                    },
+                    .DELETE => {
+                        if (modifiers.ctrl) {
+                            try self.doc.deleteWordRight();
+                        } else try self.doc.deleteForward();
+                    },
                     .ENTER => try self.doc.caretInsert("\n"),
                     .ESCAPE => {
                         if (self.doc.hasSelection()) {
@@ -65,6 +74,8 @@ pub const Controller = struct {
                 }
             },
             .CHAR => {
+                const modifiers = modifiersOf(ev);
+                if (modifiers.ctrl or modifiers.alt or modifiers.super) return .noop;
                 var buf: [4]u8 = undefined;
                 const len = try std.unicode.utf8Encode(@intCast(ev.*.char_code), &buf);
                 try self.doc.caretInsert(buf[0..len]);

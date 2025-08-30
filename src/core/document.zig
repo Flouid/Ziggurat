@@ -113,6 +113,23 @@ pub const Document = struct {
         self.resetSelection();
     }
 
+    pub fn deleteForward(self: *Document) error{OutOfMemory}!void {
+        try self.moveRight();
+        try self.caretBackspace();
+    }
+
+    pub fn deleteWordLeft(self: *Document) error{OutOfMemory}!void {
+        self.startSelection();
+        try self.moveWordLeft();
+        try self.caretBackspace();
+    }
+
+    pub fn deleteWordRight(self: *Document) error{OutOfMemory}!void {
+        self.startSelection();
+        try self.moveWordRight();
+        try self.caretBackspace();
+    }
+
     // cursor traversal
 
     pub fn moveTo(self: *Document, pos: TextPos) error{OutOfMemory}!void {
@@ -204,6 +221,29 @@ pub const Document = struct {
         c.preferred_col = c.pos.col;
     }
 
+    // selection handling
+
+    pub fn startSelection(self: *Document) void {
+        self.anchor = self.caret;
+    }
+
+    pub fn resetSelection(self: *Document) void {
+        self.anchor = null;
+    }
+
+    pub fn hasSelection(self: *const Document) bool {
+        return (self.anchor != null and self.anchor.?.byte != self.caret.byte);
+    }
+
+    pub fn selectionSpan(self: *const Document) ?Span {
+        if (!self.hasSelection()) return null;
+        const a = self.anchor.?.byte;
+        const b = self.caret.byte;
+        const start = if (a < b) a else b;
+        const len = if (a < b) b - a else a - b;
+        return .{ .start = start, .len = len };
+    }
+
     pub fn selectWord(self: *Document) error{OutOfMemory}!void {
         const start = self.prevWordBoundary(self.caret.byte);
         const end = self.nextWordBoundary(self.caret.byte);
@@ -227,29 +267,6 @@ pub const Document = struct {
         self.caret.byte = span.end();
         self.caret.pos = try self.byteToPos(span.end());
         self.caret.preferred_col = self.caret.pos.col;
-    }
-
-    // selection handling
-
-    pub fn startSelection(self: *Document) void {
-        self.anchor = self.caret;
-    }
-
-    pub fn resetSelection(self: *Document) void {
-        self.anchor = null;
-    }
-
-    pub fn hasSelection(self: *const Document) bool {
-        return (self.anchor != null and self.anchor.?.byte != self.caret.byte);
-    }
-
-    pub fn selectionSpan(self: *const Document) ?Span {
-        if (!self.hasSelection()) return null;
-        const a = self.anchor.?.byte;
-        const b = self.caret.byte;
-        const start = if (a < b) a else b;
-        const len = if (a < b) b - a else a - b;
-        return .{ .start = start, .len = len };
     }
 
     // materialization and span generation
