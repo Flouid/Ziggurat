@@ -258,7 +258,7 @@ pub const Document = struct {
     }
 
     pub fn selectLine(self: *Document) error{OutOfMemory}!void {
-        const span = try self.lineSpan(self.caret.pos.line);
+        const span = try self.lineSpan(self.caret.pos.row);
         // move caret to line start, copy it as the anchor
         self.caret.byte = span.start;
         self.caret.pos = try self.byteToPos(span.start);
@@ -266,6 +266,17 @@ pub const Document = struct {
         // move caret to line end
         self.caret.byte = span.end();
         self.caret.pos = try self.byteToPos(span.end());
+        self.caret.preferred_col = self.caret.pos.col;
+    }
+
+    pub fn selectDocument(self: *Document) error{OutOfMemory}!void {
+        // move caret to document start
+        self.caret.byte = 0;
+        self.caret.pos = .{ .row = 0, .col = 0 };
+        self.anchor = self.caret;
+        // move caret to document end
+        self.caret.byte = self.size() - 1;
+        self.caret.pos = try self.byteToPos(self.caret.byte);
         self.caret.preferred_col = self.caret.pos.col;
     }
 

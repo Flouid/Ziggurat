@@ -71,4 +71,10 @@ pub const Geometry = struct {
             .col = tp.col - vp.left_col,
         };
     }
+
+    pub fn distanceSquared(x0: f32, y0: f32, x1: f32, y1: f32) f32 {
+        const dx = x0 - x1;
+        const dy = y0 - y1;
+        return dx * dx + dy * dy;
+    }
 };

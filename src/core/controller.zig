@@ -20,7 +20,16 @@ pub const Controller = struct {
     doc: *Document,
     vp: *Viewport,
     geom: *Geometry,
+    // mouse click tracking
     mouse_held: bool = false,
+    click_count: u8 = 0,
+    last_click_ms: u64 = 0,
+    last_click_x: f32 = 0,
+    last_click_y: f32 = 0,
+    last_button: sapp.Mousebutton = .LEFT,
+
+    const double_click_ms: u64 = 400;
+    const click_slop_sq: f32 = 36;
 
     pub fn onEvent(self: *Controller, ev: [*c]const sapp.Event) !Command {
         // this has a very specific contract which is important to understand.
@@ -82,10 +91,38 @@ pub const Controller = struct {
             },
             .MOUSE_DOWN => {
                 self.mouse_held = true;
-                const pos = try self.geom.mouseToTextPos(self.doc, self.vp, ev.*.mouse_x, ev.*.mouse_y);
-                if (pos) |p| {
-                    try self.doc.moveTo(p);
-                    self.doc.startSelection();
+                const x = ev.*.mouse_x;
+                const y = ev.*.mouse_y;
+                const btn = ev.*.mouse_button;
+                const now: u64 = @intCast(std.time.milliTimestamp());
+                // determine if this is part of a sequence of clicks
+                const button_match = btn == self.last_button;
+                const fast_enough = now - self.last_click_ms <= double_click_ms;
+                const close_enough = Geometry.distanceSquared(self.last_click_x, self.last_click_y, x, y) <= click_slop_sq;
+                const click_seq = button_match and fast_enough and close_enough;
+                // track internal state accordingly
+                if (click_seq) {
+                    if (self.click_count < std.math.maxInt(u8)) self.click_count += 1;
+                } else {
+                    self.click_count = 1;
+                    self.last_button = btn;
+                }
+                self.last_click_ms = now;
+                self.last_click_x = x;
+                self.last_click_y = y;
+                // handle each case
+                const pos = try self.geom.mouseToTextPos(self.doc, self.vp, x, y);
+                if (pos == null) return .noop;
+                const p = pos.?;
+                switch (self.click_count) {
+                    1 => {
+                        try self.doc.moveTo(p);
+                        self.doc.startSelection();
+                    },
+                    2 => try self.doc.selectWord(),
+                    3 => try self.doc.selectLine(),
+                    4 => try self.doc.selectDocument(),
+                    else => {},
                 }
                 return .edit;
             },
