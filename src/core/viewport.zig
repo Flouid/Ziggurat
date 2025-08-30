@@ -11,32 +11,32 @@ pub const Viewport = struct {
     left_col: usize,
     dims: Types.ScreenDims,
 
-    overscroll: usize = 16,
-    caret_margin: usize = 8,
+    const overscroll: usize = 16;
+    const caret_margin: usize = 8;
 
     pub fn ensureCaretVisible(self: *Viewport, caret: Types.TextPos, max_line: usize, max_col: usize) void {
         // adjust the viewport so the caret always remains visible
         if (self.dims.h == 0 or self.dims.w == 0) return;
         // caret may hug top edge
-        if (caret.row < self.top_line + self.caret_margin) {
-            self.top_line = if (caret.row < self.caret_margin) 0 else caret.row - self.caret_margin;
+        if (caret.row < self.top_line + caret_margin) {
+            self.top_line = if (caret.row < caret_margin) 0 else caret.row - caret_margin;
         }
         // try to keep bottom some distance from caret
         const bottom_edge = self.top_line + (self.dims.h - 1);
-        if (caret.row > bottom_edge - @min(self.caret_margin, bottom_edge)) {
-            const base = caret.row + self.caret_margin + 1;
+        if (caret.row > bottom_edge - @min(caret_margin, bottom_edge)) {
+            const base = caret.row + caret_margin + 1;
             const top = if (base <= self.dims.h) 0 else base - self.dims.h;
             const max_top = self.maxTop(max_line);
             self.top_line = @min(top, max_top);
         }
         // caret may hug left edge
-        if (caret.col < self.left_col + self.caret_margin) {
-            self.left_col = if (caret.col < self.caret_margin) 0 else caret.col - self.caret_margin;
+        if (caret.col < self.left_col + caret_margin) {
+            self.left_col = if (caret.col < caret_margin) 0 else caret.col - caret_margin;
         }
         // try to keep right edge some distance from caret
         const right_edge = self.left_col + (self.dims.w - 1);
-        if (caret.col > right_edge - @min(self.caret_margin, right_edge)) {
-            const base = caret.col + self.caret_margin + 1;
+        if (caret.col > right_edge - @min(caret_margin, right_edge)) {
+            const base = caret.col + caret_margin + 1;
             const left = if (base <= self.dims.w) 0 else base - self.dims.w;
             const max_left = self.maxLeft(max_col);
             self.left_col = @min(left, max_left);
@@ -77,13 +77,13 @@ pub const Viewport = struct {
 
     fn maxTop(self: *const Viewport, max_line: usize) usize {
         if (self.dims.h == 0) return 0;
-        const content = max_line + @min(self.overscroll, self.dims.h - 1);
+        const content = max_line + @min(overscroll, self.dims.h - 1);
         return if (content < self.dims.h) 0 else content - self.dims.h;
     }
 
     fn maxLeft(self: *const Viewport, max_col: usize) usize {
         if (self.dims.w == 0) return 0;
-        const content = max_col + @min(self.overscroll, self.dims.w - 1);
+        const content = max_col + @min(overscroll, self.dims.w - 1);
         return if (content < self.dims.w) 0 else content - self.dims.w;
     }
 
