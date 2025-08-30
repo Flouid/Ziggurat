@@ -8,11 +8,12 @@ const Renderer = @import("renderer").Renderer;
 const Theme = @import("renderer").Theme;
 const Geometry = @import("geometry").Geometry;
 const Controller = @import("controller").Controller;
+const ScreenDims = @import("types").ScreenDims;
 
 const App = struct {
     gpa: std.heap.GeneralPurposeAllocator(.{}),
     arena: std.heap.ArenaAllocator = undefined,
-    geometry: Geometry = undefined,
+    geom: Geometry = undefined,
     doc: Document = undefined,
     vp: Viewport = undefined,
     controller: Controller = undefined,
@@ -29,7 +30,7 @@ const App = struct {
     fn init(self: *App) !void {
         const gpa = self.gpa.allocator();
         // initialize geometry
-        self.geometry = .{ .cell_h_px = 8.0, .cell_w_px = 8.0, .pad_x_cells = 0.5, .pad_y_cells = 0.5 };
+        self.geom = .{ .cell_h_px = 8.0, .cell_w_px = 8.0, .pad_x_cells = 0.5, .pad_y_cells = 0.5 };
         // initialize document
         if (self.path_in) |p| {
             const bytes = try file_io.read(gpa, p);
@@ -39,20 +40,11 @@ const App = struct {
             self.doc = try Document.init(gpa, "");
         }
         // initialize viewport
-        const dims = windowCells(self.geometry);
-        self.vp = .{
-            .top_line = 0,
-            .left_col = 0,
-            .height = dims.h,
-            .width = dims.w,
-        };
+        self.vp = .{ .top_line = 0, .left_col = 0, .dims = self.getScreenDims() };
         // initialize controller
-        self.controller = .{ .doc = &self.doc, .vp = &self.vp, .geom = &self.geometry };
+        self.controller = .{ .doc = &self.doc, .vp = &self.vp, .geom = &self.geom };
         // initialize renderer
-        self.renderer = Renderer.init(gpa, .{
-            .pad_x = self.geometry.pad_x_cells,
-            .pad_y = self.geometry.pad_y_cells,
-        });
+        self.renderer = Renderer.init(gpa, .{}, self.geom);
         // initialize arena for rendering each frame
         self.arena = std.heap.ArenaAllocator.init(gpa);
         // cache initial layout on open
@@ -75,9 +67,6 @@ const App = struct {
         self.last_tick_ns = now;
         self.blink_accum_ns = (self.blink_accum_ns + dt) % self.blink_period_ns;
         const draw_caret = self.blink_accum_ns < self.blink_period_ns / 2;
-        // calculating dimensions per frame natively supports resizing
-        const dims = windowCells(self.geometry);
-        self.vp.resize(dims.h, dims.w);
         // rebuild the layout if an edit occured since last frame
         if (self.dirty) {
             self.dirty = false;
@@ -104,17 +93,11 @@ const App = struct {
         _ = self.arena.reset(.retain_capacity);
         self.cached_layout = try Layout.init(self.arena.allocator(), &self.doc, &self.vp);
     }
-};
 
-fn windowCells(geometry: Geometry) struct { w: usize, h: usize } {
-    const w_px = @as(f32, @floatFromInt(sapp.width()));
-    const h_px = @as(f32, @floatFromInt(sapp.height()));
-    const avail_w = w_px - 2.0 * geometry.pad_x_cells * geometry.cell_w_px;
-    const avail_h = h_px - 2.0 * geometry.pad_y_cells * geometry.cell_h_px;
-    const cols: usize = if (avail_w <= 0) 0 else @intFromFloat(@floor(avail_w / geometry.cell_h_px));
-    const rows: usize = if (avail_h <= 0) 0 else @intFromFloat(@floor(avail_h / geometry.cell_w_px));
-    return .{ .w = cols, .h = rows };
-}
+    fn getScreenDims(self: *const App) ScreenDims {
+        return self.geom.pixelDimsToScreenDims(.{ .w = @floatFromInt(sapp.width()), .h = @floatFromInt(sapp.height()) });
+    }
+};
 
 // GLOBAL app instance, sokol wants this
 var G: App = .{ .gpa = std.heap.GeneralPurposeAllocator(.{}){} };
@@ -123,14 +106,14 @@ var G: App = .{ .gpa = std.heap.GeneralPurposeAllocator(.{}){} };
 
 fn init_cb() callconv(.c) void {
     G.init() catch |e| {
-        std.log.err("init failed: {s}\n", .{@errorName(e)});
+        std.log.err("init failed: {t}\n", .{e});
         sapp.requestQuit();
     };
 }
 
 fn frame_cb() callconv(.c) void {
     G.frame() catch |e| {
-        std.log.err("failure when rendering frame: {s}\n", .{@errorName(e)});
+        std.log.err("failure when rendering frame: {t}\n", .{e});
         sapp.requestQuit();
     };
 }
@@ -141,14 +124,15 @@ fn cleanup_cb() callconv(.c) void {
 
 fn event_cb(ev: [*c]const sapp.Event) callconv(.c) void {
     const command = G.controller.onEvent(ev) catch |e| blk: {
-        std.log.err("error handling event: {s}\n", .{@errorName(e)});
+        std.log.err("error handling event: {t}\n", .{e});
         break :blk .exit;
     };
     switch (command) {
         .save => G.save() catch |e| {
-            std.log.err("failed to save document: {s}\n", .{@errorName(e)});
+            std.log.err("failed to save document: {t}\n", .{e});
         },
         .exit => sapp.requestQuit(),
+        .resize => G.vp.resize(G.getScreenDims()),
         .noop => return,
         else => {},
     }

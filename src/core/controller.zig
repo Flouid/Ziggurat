@@ -11,20 +11,22 @@ const REVERSE_DIR = true;
 pub const Command = union(enum) {
     save,
     exit,
-    noop,
     edit,
+    resize,
+    noop,
 };
 
 pub const Controller = struct {
     doc: *Document,
     vp: *Viewport,
     geom: *Geometry,
+    mouse_held: bool = false,
 
     pub fn onEvent(self: *Controller, ev: [*c]const sapp.Event) !Command {
         // this has a very specific contract which is important to understand.
         // If the controller determines some action is requested which it cannot handle (save/exit/etc),
         // then it will return that action as a command for the app to deal with.
-        // If the event is unsupported, it returns a .noop command, do nothing
+        // If the event is unsupported or doesn't require re-render, it returns a .noop command
         // If the event was supported and handled, it returns .edit (trigger re-render).
         switch (ev.*.type) {
             .KEY_DOWN => {
@@ -36,14 +38,21 @@ pub const Controller = struct {
                 if (modifiers.ctrl and key == .D) return .exit;
 
                 switch (key) {
-                    .RIGHT => try self.doc.moveRight(),
-                    .LEFT => try self.doc.moveLeft(),
-                    .DOWN => try self.doc.moveDown(),
-                    .UP => try self.doc.moveUp(),
-                    .HOME => try self.doc.moveHome(),
-                    .END => try self.doc.moveEnd(),
-                    .BACKSPACE => try self.doc.caretBackspace(1),
+                    .RIGHT => try traverseWithModifiers(self.doc, modifiers, Document.moveRight),
+                    .LEFT => try traverseWithModifiers(self.doc, modifiers, Document.moveLeft),
+                    .DOWN => try traverseWithModifiers(self.doc, modifiers, Document.moveDown),
+                    .UP => try traverseWithModifiers(self.doc, modifiers, Document.moveUp),
+                    // TODO: fix home and end, on my machine the events are KP_1 and KP_7 with or without numlock
+                    .HOME => try traverseWithModifiers(self.doc, modifiers, Document.moveHome),
+                    .END => try traverseWithModifiers(self.doc, modifiers, Document.moveEnd),
+                    .BACKSPACE => try self.doc.caretBackspace(),
                     .ENTER => try self.doc.caretInsert("\n"),
+                    .ESCAPE => {
+                        if (self.doc.hasSelection()) {
+                            self.doc.resetSelection();
+                            return .edit;
+                        } else return .noop;
+                    },
                     else => return .noop,
                 }
             },
@@ -53,9 +62,22 @@ pub const Controller = struct {
                 try self.doc.caretInsert(buf[0..len]);
             },
             .MOUSE_DOWN => {
+                self.mouse_held = true;
+                const pos = try self.geom.mouseToTextPos(self.doc, self.vp, ev.*.mouse_x, ev.*.mouse_y);
+                if (pos) |p| {
+                    try self.doc.moveTo(p);
+                    self.doc.startSelection();
+                }
+                return .edit;
+            },
+            .MOUSE_MOVE => {
+                if (!self.mouse_held) return .noop;
                 const pos = try self.geom.mouseToTextPos(self.doc, self.vp, ev.*.mouse_x, ev.*.mouse_y);
                 if (pos) |p| try self.doc.moveTo(p);
-                return .edit;
+            },
+            .MOUSE_UP => {
+                self.mouse_held = false;
+                return .noop;
             },
             .MOUSE_ENTER => {
                 sapp.setMouseCursor(.IBEAM);
@@ -82,7 +104,7 @@ pub const Controller = struct {
                 if (!self.vp.scrollBy(d_lines, d_cols, n_lines, n_cols)) return .noop;
                 return .edit;
             },
-            .RESIZED => return .edit,
+            .RESIZED => return .resize,
             else => return .noop,
         }
         // unless skipped via early return, ensure the caret is visible
@@ -109,4 +131,10 @@ fn modifiersOf(ev: [*c]const sapp.Event) Modifiers {
         .alt = (m & sapp.modifier_alt) != 0,
         .super = (m & sapp.modifier_super) != 0,
     };
+}
+
+fn traverseWithModifiers(doc: *Document, modifiers: Modifiers, comptime traverse: fn (*Document) error{OutOfMemory}!void) !void {
+    if (modifiers.shift and !doc.hasSelection()) doc.startSelection();
+    if (!modifiers.shift) doc.resetSelection();
+    try traverse(doc);
 }

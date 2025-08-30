@@ -1,7 +1,5 @@
 # Ziggurat
-A GUI-based text editor written in zig. Mainly intended as a learning project and ideally skills demo.
-
-The name isn't that meaningful, just a play on zig and the idea of building functionality in solid discrete layers. The hope is that most components are well built and self-sufficient enough to be viable as standalone imports to other projects. 
+A blazingly fast GUI-based text editor written in Zig. Meant to do everything that notepad does, but better.
 
 Currently, it's in a bare-minimum viable v0 form. However, the core functionality it present.
 
@@ -19,23 +17,18 @@ Two programs:
 - `Ziggurat`: the actual text editor
 - `test-engine`: a CLI for testing and benchmarking the underlying text buffer
 
-## Features
+## Features and Usage
 
 - Smoothly opens, edits, and saves multi-GB files
-- Supports navigation by mouse click
-- Supports keyboard navigation with arrow keys + home/end
-- Supports generic typing + backspace
-- Supports horizontal + vertical scrolling
-- If launched with no command-line args, it opens an empty scratch document
+- Supports all standard mouse + keyboard navigation
+- If launched with no command-line args, it opens an empty unsavable scratch document
 - If launched via CLI with `Ziggurat.exe <file_path>` it will open that text file for editing or create one
-- When working on a named file, `ctrl-s` saves and overwrites the opened file
-- `ctrl-d` exits
-- Dynamic resizing
-- Cursor clamping, cursor will always remain visible
+- Save with `ctrl-s` and exit with `ctrl-d`
 
 ## Limitations
 
-- No selection/highlight
+Each of these is being addressed on the way to v1. 
+
 - No undo/redo
 - No file renaming
 - No scaling or font support
