@@ -33,6 +33,18 @@ pub const Geometry = struct {
         return .{ .x = x, .y = y };
     }
 
+    pub fn screenRowToClipRect(self: *const Geometry, row: usize, l_col: usize, r_col: usize, dims: Types.PixelDims) Types.ClipRect {
+        const x0_px: f32 = (self.pad_x_cells + @as(f32, @floatFromInt(l_col))) * self.cell_w_px;
+        const y0_px: f32 = (self.pad_y_cells + @as(f32, @floatFromInt(row))) * self.cell_h_px;
+        const w_px: f32 = (@as(f32, @floatFromInt(r_col - l_col))) * self.cell_w_px;
+        const h_px: f32 = self.cell_h_px;
+        const x_clip = (x0_px / dims.w) * 2.0 - 1.0;
+        const y_clip = 1.0 - (y0_px / dims.h) * 2.0;
+        const w_clip = (w_px / dims.w) * 2.0;
+        const h_clip = -(h_px / dims.h) * 2.0;
+        return .{ .x = x_clip, .y = y_clip, .w = w_clip, .h = h_clip };
+    }
+
     pub fn appDimsToScreenDims(self: *const Geometry, dims: Types.PixelDims) Types.ScreenDims {
         const avail_w = dims.w - 2.0 * self.pad_x_cells * self.cell_w_px;
         const avail_h = dims.h - 2.0 * self.pad_y_cells * self.cell_h_px;
@@ -41,24 +53,14 @@ pub const Geometry = struct {
         return .{ .w = w, .h = h };
     }
 
-    pub fn pixelPosToClipPos(pos: Types.PixelPos, dims: Types.PixelDims) Types.ClipPos {
-        return .{
-            .x = (pos.x / dims.w) * 2.0 - 1.0,
-            .y = 1.0 - (pos.y / dims.h) * 2.0,
-        };
-    }
+    // static functions
 
-    pub fn pixelDeltaToClipDelta(pos: Types.PixelPos, dims: Types.PixelDims) Types.ClipPos {
-        return .{
-            .x = (pos.x / dims.w) * 2.0,
-            .y = -(pos.y / dims.h) * 2.0
-        };
-    }
-
-    pub fn pixelPosToClipRect(base: Types.PixelPos, offset: Types.PixelPos, dims: Types.PixelDims) Types.ClipRect {
-        const pos = pixelPosToClipPos(base, dims);
-        const off = pixelDeltaToClipDelta(offset, dims);
-        return .{ .x = pos.x, .y = pos.y, .h = off.y, .w = off.x };
+    pub fn pixelPosToClipRect(pos: Types.PixelPos, off: Types.PixelPos, dims: Types.PixelDims) Types.ClipRect {
+        const x = (pos.x / dims.w) * 2.0 - 1.0;
+        const y = 1.0 - (pos.y / dims.h) * 2.0;
+        const w = (off.x / dims.w) * 2.0;
+        const h = -(off.y / dims.h) * 2.0;
+        return .{ .x = x, .y = y, .h = h, .w = w };
     }
 
     pub fn textPosToScreenPos(tp: Types.TextPos, vp: *const Viewport) ?Types.ScreenPos {

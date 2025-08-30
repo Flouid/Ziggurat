@@ -25,7 +25,7 @@ pub const Controller = struct {
         // this has a very specific contract which is important to understand.
         // If the controller determines some action is requested which it cannot handle (save/exit/etc),
         // then it will return that action as a command for the app to deal with.
-        // If the event is unsupported, it returns a .noop command, do nothing
+        // If the event is unsupported or doesn't require re-render, it returns a .noop command
         // If the event was supported and handled, it returns .edit (trigger re-render).
         switch (ev.*.type) {
             .KEY_DOWN => {

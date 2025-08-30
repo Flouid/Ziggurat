@@ -14,15 +14,11 @@ pub const Layout = struct {
 
     pub fn init(arena: std.mem.Allocator, doc: *Document, vp: *const Viewport) error{OutOfMemory}!Layout {
         const total = doc.lineCount();
-        // vertical clamping
-        const first = if (total == 0) 0 else (if (vp.top_line < total) vp.top_line else total - 1);
-        const remaining = if (total > first) total - first else 0;
-        const visible_rows = @min(vp.dims.h, remaining);
-        // line creation
+        const visible_rows = @min(vp.dims.h, total - vp.top_line);
         var lines = try arena.alloc(Span, visible_rows);
         var i: usize = 0;
         while (i < visible_rows) : (i += 1) {
-            const full_line = try doc.lineSpan(first + i);
+            const full_line = try doc.lineSpan(vp.top_line + i);
             const len = full_line.len;
             const left = vp.left_col;
             const col_start = if (left > len) len else left;
@@ -30,6 +26,6 @@ pub const Layout = struct {
             const col_count = @min(vp.dims.w, remaining_cols);
             lines[i] = .{ .start = full_line.start + col_start, .len = col_count };
         }
-        return .{ .first_row = first, .width = vp.dims.w, .lines = lines, .caret = Geometry.textPosToScreenPos(doc.caret.pos, vp) };
+        return .{ .first_row = vp.top_line, .width = vp.dims.w, .lines = lines, .caret = Geometry.textPosToScreenPos(doc.caret.pos, vp) };
     }
 };

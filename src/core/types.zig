@@ -20,6 +20,10 @@ pub const Span = struct {
     // a generic [start, start + len) open range for indexing a sequence of bytes in the document
     start: usize,
     len: usize,
+
+    pub fn end(self: Span) usize {
+        return self.start + self.len;
+    }
 };
 
 pub const PixelPos = struct {

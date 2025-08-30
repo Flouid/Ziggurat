@@ -3,6 +3,8 @@ const debug = @import("debug");
 const Document = @import("document").Document;
 const Layout = @import("layout").Layout;
 const Geometry = @import("geometry").Geometry;
+const TextPos = @import("types").TextPos;
+const Span = @import("types").Span;
 const PixelPos = @import("types").PixelPos;
 const PixelDims = @import("types").PixelDims;
 const ClipPos = @import("types").ClipPos;
@@ -91,7 +93,6 @@ pub const Renderer = struct {
         // materialize the doc lines directly into sokol's debugtext
         var row: usize = 0;
         var writer = SdtxWriter{ .buffer = self.line_buffer };
-        // const rows_per_flush = @max(1, GLYPH_BUDGET / cols);
         while (row < layout.lines.len) : (row += 1) {
             sdtx.pos(0, @floatFromInt(row));
             const line = layout.lines[row];
@@ -99,9 +100,14 @@ pub const Renderer = struct {
             writer.flush();
         }
         sdtx.draw();
+        // draw a highlight around the selection if it exists
+        if (doc.hasSelection()) {
+            var it = SelectionIter.init(doc, layout, &self.geom, dims);
+            drawQuads(self.highlight, &it);
+            sgl.draw();
+        }
         // draw the caret
         if (!draw_caret) return;
-        // sgl operates in clip space, so translate from the pixels we used in sdtx
         if (layout.caret) |caret| {
             const pos = self.geom.screenPosToPixelPos(caret);
             const off: PixelPos = .{ .x = self.geom.cell_w_px / 4, .y = self.geom.cell_h_px };
@@ -169,5 +175,52 @@ fn drawQuad(color: u32, rect: ClipRect) void {
     sgl.v2f(rect.x + rect.w, rect.y);
     sgl.v2f(rect.x + rect.w, rect.y + rect.h);
     sgl.v2f(rect.x, rect.y + rect.h);
+    sgl.end();
+}
+
+const SelectionIter = struct {
+    // no allocation way of iterating through every selected or partially selected line
+    // returns coordinates in clip space of rectangle bounding the line
+    // used for performantly drawing highlight around selected text
+    doc: *const Document,
+    layout: *const Layout,
+    geom: *const Geometry,
+    dims: PixelDims,
+    selection: ?Span,
+    i: usize = 0,
+
+    fn init(doc: *const Document, layout: *const Layout, geom: *const Geometry, dims: PixelDims) SelectionIter {
+        return .{ .doc = doc, .layout = layout, .geom = geom, .dims = dims, .selection = doc.selectionSpan() };
+    }
+
+    fn next(self: *SelectionIter) ?ClipRect {
+        const s_opt = self.selection;
+        if (s_opt == null) return null;
+        const sel = s_opt.?;
+        // loop so lines with nothing visible can be skipped
+        while (self.i < self.layout.lines.len) {
+            self.i += 1;
+            const row = self.layout.lines[self.i-1];
+            const start: usize = @max(sel.start, row.start);
+            const end: usize = @min(sel.end(), row.end());
+            if (end <= start) continue; 
+            const l_col = start - row.start;
+            const r_col = end - row.start;
+            const rect = self.geom.screenRowToClipRect(self.i-1, l_col, r_col, self.dims);
+            return rect;
+        }
+        return null;
+    }
+};
+
+fn drawQuads(color: u32, it: *SelectionIter) void {
+    sgl.c1i(color);
+    sgl.beginQuads();
+    while (it.next()) |r| {
+        sgl.v2f(r.x, r.y);
+        sgl.v2f(r.x + r.w, r.y);
+        sgl.v2f(r.x + r.w, r.y + r.h);
+        sgl.v2f(r.x, r.y + r.h);
+    }
     sgl.end();
 }
