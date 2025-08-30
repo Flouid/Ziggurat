@@ -38,8 +38,16 @@ pub const Controller = struct {
                 if (modifiers.ctrl and key == .D) return .exit;
 
                 switch (key) {
-                    .RIGHT => try traverseWithModifiers(self.doc, modifiers, Document.moveRight),
-                    .LEFT => try traverseWithModifiers(self.doc, modifiers, Document.moveLeft),
+                    .RIGHT => {
+                        if (modifiers.ctrl) {
+                            try traverseWithModifiers(self.doc, modifiers, Document.moveWordRight);
+                        } else try traverseWithModifiers(self.doc, modifiers, Document.moveRight);
+                    },
+                    .LEFT => {
+                        if (modifiers.ctrl) {
+                            try traverseWithModifiers(self.doc, modifiers, Document.moveWordLeft);
+                        } else try traverseWithModifiers(self.doc, modifiers, Document.moveLeft);
+                    },
                     .DOWN => try traverseWithModifiers(self.doc, modifiers, Document.moveDown),
                     .UP => try traverseWithModifiers(self.doc, modifiers, Document.moveUp),
                     // TODO: fix home and end, on my machine the events are KP_1 and KP_7 with or without numlock
