@@ -44,7 +44,7 @@ pub const Geometry = struct {
         return .{ .x = x_clip, .y = y_clip, .w = w_clip, .h = h_clip };
     }
 
-    pub fn appDimsToScreenDims(self: *const Geometry, dims: Types.PixelDims) Types.ScreenDims {
+    pub fn pixelDimsToScreenDims(self: *const Geometry, dims: Types.PixelDims) Types.ScreenDims {
         const avail_w = dims.w - 2.0 * self.pad_x_cells * self.cell_w_px;
         const avail_h = dims.h - 2.0 * self.pad_y_cells * self.cell_h_px;
         const w: usize = if (avail_w <= 0) 0 else @intFromFloat(@floor(avail_w / self.cell_h_px));

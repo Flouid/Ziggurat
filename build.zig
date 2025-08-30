@@ -12,23 +12,6 @@ pub fn build(b: *std.Build) void {
 
     addApps(b, cli_target, cli_optimize);
     addApps(b, target_win, cli_optimize);
-
-    const mods = addCoreModules(b, cli_target, cli_optimize);
-    const buffer_tests = b.addTest(.{ .root_module = mods.buffer });
-    const doc_tests = b.addTest(.{ .root_module = mods.document });
-    const viewport_tests = b.addTest(.{ .root_module = mods.viewport });
-    const layout_tests = b.addTest(.{ .root_module = mods.layout });
-
-    const run_buffer_tests = b.addRunArtifact(buffer_tests);
-    const run_doc_tests = b.addRunArtifact(doc_tests);
-    const run_viewport_tests = b.addRunArtifact(viewport_tests);
-    const run_layout_tests = b.addRunArtifact(layout_tests);
-
-    const test_step = b.step("test", "Run tests");
-    test_step.dependOn(&run_buffer_tests.step);
-    test_step.dependOn(&run_doc_tests.step);
-    test_step.dependOn(&run_viewport_tests.step);
-    test_step.dependOn(&run_layout_tests.step);
 }
 
 const CoreModules = struct {

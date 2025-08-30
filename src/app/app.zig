@@ -95,7 +95,7 @@ const App = struct {
     }
 
     fn getScreenDims(self: *const App) ScreenDims {
-        return self.geom.appDimsToScreenDims(.{ .w = @floatFromInt(sapp.width()), .h = @floatFromInt(sapp.height()) });
+        return self.geom.pixelDimsToScreenDims(.{ .w = @floatFromInt(sapp.width()), .h = @floatFromInt(sapp.height()) });
     }
 };
 

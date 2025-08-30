@@ -20,6 +20,7 @@ pub const Controller = struct {
     doc: *Document,
     vp: *Viewport,
     geom: *Geometry,
+    mouse_held: bool = false,
 
     pub fn onEvent(self: *Controller, ev: [*c]const sapp.Event) !Command {
         // this has a very specific contract which is important to understand.
@@ -61,9 +62,22 @@ pub const Controller = struct {
                 try self.doc.caretInsert(buf[0..len]);
             },
             .MOUSE_DOWN => {
+                self.mouse_held = true;
+                const pos = try self.geom.mouseToTextPos(self.doc, self.vp, ev.*.mouse_x, ev.*.mouse_y);
+                if (pos) |p| {
+                    try self.doc.moveTo(p);
+                    self.doc.startSelection();
+                }
+                return .edit;
+            },
+            .MOUSE_MOVE => {
+                if (!self.mouse_held) return .noop;
                 const pos = try self.geom.mouseToTextPos(self.doc, self.vp, ev.*.mouse_x, ev.*.mouse_y);
                 if (pos) |p| try self.doc.moveTo(p);
-                return .edit;
+            },
+            .MOUSE_UP => {
+                self.mouse_held = false;
+                return .noop;
             },
             .MOUSE_ENTER => {
                 sapp.setMouseCursor(.IBEAM);
