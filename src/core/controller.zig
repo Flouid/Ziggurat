@@ -20,7 +20,16 @@ pub const Controller = struct {
     doc: *Document,
     vp: *Viewport,
     geom: *Geometry,
+    // mouse click tracking
     mouse_held: bool = false,
+    click_count: u8 = 0,
+    last_click_ms: u64 = 0,
+    last_click_x: f32 = 0,
+    last_click_y: f32 = 0,
+    last_button: sapp.Mousebutton = .LEFT,
+
+    const double_click_ms: u64 = 400;
+    const click_slop_sq: f32 = 36;
 
     pub fn onEvent(self: *Controller, ev: [*c]const sapp.Event) !Command {
         // this has a very specific contract which is important to understand.
@@ -38,14 +47,31 @@ pub const Controller = struct {
                 if (modifiers.ctrl and key == .D) return .exit;
 
                 switch (key) {
-                    .RIGHT => try traverseWithModifiers(self.doc, modifiers, Document.moveRight),
-                    .LEFT => try traverseWithModifiers(self.doc, modifiers, Document.moveLeft),
+                    .RIGHT => {
+                        if (modifiers.ctrl) {
+                            try traverseWithModifiers(self.doc, modifiers, Document.moveWordRight);
+                        } else try traverseWithModifiers(self.doc, modifiers, Document.moveRight);
+                    },
+                    .LEFT => {
+                        if (modifiers.ctrl) {
+                            try traverseWithModifiers(self.doc, modifiers, Document.moveWordLeft);
+                        } else try traverseWithModifiers(self.doc, modifiers, Document.moveLeft);
+                    },
                     .DOWN => try traverseWithModifiers(self.doc, modifiers, Document.moveDown),
                     .UP => try traverseWithModifiers(self.doc, modifiers, Document.moveUp),
                     // TODO: fix home and end, on my machine the events are KP_1 and KP_7 with or without numlock
                     .HOME => try traverseWithModifiers(self.doc, modifiers, Document.moveHome),
                     .END => try traverseWithModifiers(self.doc, modifiers, Document.moveEnd),
-                    .BACKSPACE => try self.doc.caretBackspace(),
+                    .BACKSPACE => {
+                        if (modifiers.ctrl) {
+                            try self.doc.deleteWordLeft();
+                        } else try self.doc.caretBackspace();
+                    },
+                    .DELETE => {
+                        if (modifiers.ctrl) {
+                            try self.doc.deleteWordRight();
+                        } else try self.doc.deleteForward();
+                    },
                     .ENTER => try self.doc.caretInsert("\n"),
                     .ESCAPE => {
                         if (self.doc.hasSelection()) {
@@ -57,16 +83,46 @@ pub const Controller = struct {
                 }
             },
             .CHAR => {
+                const modifiers = modifiersOf(ev);
+                if (modifiers.ctrl or modifiers.alt or modifiers.super) return .noop;
                 var buf: [4]u8 = undefined;
                 const len = try std.unicode.utf8Encode(@intCast(ev.*.char_code), &buf);
                 try self.doc.caretInsert(buf[0..len]);
             },
             .MOUSE_DOWN => {
                 self.mouse_held = true;
-                const pos = try self.geom.mouseToTextPos(self.doc, self.vp, ev.*.mouse_x, ev.*.mouse_y);
-                if (pos) |p| {
-                    try self.doc.moveTo(p);
-                    self.doc.startSelection();
+                const x = ev.*.mouse_x;
+                const y = ev.*.mouse_y;
+                const btn = ev.*.mouse_button;
+                const now: u64 = @intCast(std.time.milliTimestamp());
+                // determine if this is part of a sequence of clicks
+                const button_match = btn == self.last_button;
+                const fast_enough = now - self.last_click_ms <= double_click_ms;
+                const close_enough = Geometry.distanceSquared(self.last_click_x, self.last_click_y, x, y) <= click_slop_sq;
+                const click_seq = button_match and fast_enough and close_enough;
+                // track internal state accordingly
+                if (click_seq) {
+                    if (self.click_count < std.math.maxInt(u8)) self.click_count += 1;
+                } else {
+                    self.click_count = 1;
+                    self.last_button = btn;
+                }
+                self.last_click_ms = now;
+                self.last_click_x = x;
+                self.last_click_y = y;
+                // handle each case
+                const pos = try self.geom.mouseToTextPos(self.doc, self.vp, x, y);
+                if (pos == null) return .noop;
+                const p = pos.?;
+                switch (self.click_count) {
+                    1 => {
+                        try self.doc.moveTo(p);
+                        self.doc.startSelection();
+                    },
+                    2 => try self.doc.selectWord(),
+                    3 => try self.doc.selectLine(),
+                    4 => try self.doc.selectDocument(),
+                    else => {},
                 }
                 return .edit;
             },

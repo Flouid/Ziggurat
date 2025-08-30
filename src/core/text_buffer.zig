@@ -194,6 +194,20 @@ pub const TextBuffer = struct {
         @panic("max iterations reached without finding line in document");
     }
 
+    pub fn peek(self: *const TextBuffer, at: usize) u8 {
+        debug.dassert(at < self.doc_len, "peek out of bounds");
+        const found = findAt(self.root, at);
+        const loc = locateInLeaf(found.leaf, found.offset);
+        const piece = leafPiecesConst(found.leaf).items[loc.piece_idx];
+        const src = switch (piece.buf()) {
+            .Original => self.original,
+            .Add => self.add.items,
+        };
+        const pos = piece.off + loc.offset;
+        debug.dassert(pos < src.len, "piece offset outside of source buffer");
+        return src[pos]; 
+    }
+
     pub fn materializeRange(self: *TextBuffer, w: anytype, start: usize, len: usize) !void {
         // when a view should be written directly to a writer
         if (len == 0) return;
@@ -789,7 +803,6 @@ fn locateInLeaf(leaf: *const Node, offset: usize) InLeaf {
         if (offset < acc + piece.len()) return .{ .piece_idx = idx, .offset = offset - acc };
         acc += piece.len();
     }
-    if (offset == acc) return .{ .piece_idx = len, .offset = 0 };
     @panic("couldn't find offset in leaf");
 }
 

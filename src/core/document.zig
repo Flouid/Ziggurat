@@ -113,6 +113,23 @@ pub const Document = struct {
         self.resetSelection();
     }
 
+    pub fn deleteForward(self: *Document) error{OutOfMemory}!void {
+        try self.moveRight();
+        try self.caretBackspace();
+    }
+
+    pub fn deleteWordLeft(self: *Document) error{OutOfMemory}!void {
+        self.startSelection();
+        try self.moveWordLeft();
+        try self.caretBackspace();
+    }
+
+    pub fn deleteWordRight(self: *Document) error{OutOfMemory}!void {
+        self.startSelection();
+        try self.moveWordRight();
+        try self.caretBackspace();
+    }
+
     // cursor traversal
 
     pub fn moveTo(self: *Document, pos: TextPos) error{OutOfMemory}!void {
@@ -188,6 +205,22 @@ pub const Document = struct {
         c.byte = span.start + c.pos.col;
     }
 
+    pub fn moveWordLeft(self: *Document) error{OutOfMemory}!void {
+        const c = &self.caret;
+        const at = self.prevWordBoundary(c.byte);
+        c.byte = at;
+        c.pos = try self.byteToPos(at);
+        c.preferred_col = c.pos.col;
+    }
+
+    pub fn moveWordRight(self: *Document) error{OutOfMemory}!void {
+        const c = &self.caret;
+        const at = self.nextWordBoundary(c.byte);
+        c.byte = at;
+        c.pos = try self.byteToPos(at);
+        c.preferred_col = c.pos.col;
+    }
+
     // selection handling
 
     pub fn startSelection(self: *Document) void {
@@ -209,6 +242,42 @@ pub const Document = struct {
         const start = if (a < b) a else b;
         const len = if (a < b) b - a else a - b;
         return .{ .start = start, .len = len };
+    }
+
+    pub fn selectWord(self: *Document) error{OutOfMemory}!void {
+        const start = self.prevWordBoundary(self.caret.byte);
+        const end = self.nextWordBoundary(self.caret.byte);
+        // move caret to word start, copy it as the anchor
+        self.caret.byte = start;
+        self.caret.pos = try self.byteToPos(start);
+        self.anchor = self.caret;
+        // move caret to word end
+        self.caret.byte = end;
+        self.caret.pos = try self.byteToPos(end);
+        self.caret.preferred_col = self.caret.pos.col;
+    }
+
+    pub fn selectLine(self: *Document) error{OutOfMemory}!void {
+        const span = try self.lineSpan(self.caret.pos.row);
+        // move caret to line start, copy it as the anchor
+        self.caret.byte = span.start;
+        self.caret.pos = try self.byteToPos(span.start);
+        self.anchor = self.caret;
+        // move caret to line end
+        self.caret.byte = span.end();
+        self.caret.pos = try self.byteToPos(span.end());
+        self.caret.preferred_col = self.caret.pos.col;
+    }
+
+    pub fn selectDocument(self: *Document) error{OutOfMemory}!void {
+        // move caret to document start
+        self.caret.byte = 0;
+        self.caret.pos = .{ .row = 0, .col = 0 };
+        self.anchor = self.caret;
+        // move caret to document end
+        self.caret.byte = self.size() - 1;
+        self.caret.pos = try self.byteToPos(self.caret.byte);
+        self.caret.preferred_col = self.caret.pos.col;
     }
 
     // materialization and span generation
@@ -262,4 +331,32 @@ pub const Document = struct {
         // NOTE: implicit assumption that bytes and columns are interchangable
         return start + pos.col;
     }
+
+    fn prevWordBoundary(self: *const Document, at: usize) usize {
+        var i = at;
+        while (i > 0 and classify(self.buffer.peek(i - 1)) == .space) : (i -= 1) {}
+        i -= 1;
+        const class = classify(self.buffer.peek(i));
+        while (i > 0 and classify(self.buffer.peek(i - 1)) == class) : (i -= 1) {}
+        return i;
+    }
+
+    fn nextWordBoundary(self: *const Document, at: usize) usize {
+        var i = at;
+        const n = self.size();
+        while (i < n and classify(self.buffer.peek(i)) == .space) : (i += 1) {}
+        const class = classify(self.buffer.peek(i));
+        while (i < n and classify(self.buffer.peek(i)) == class) : (i += 1) {}
+        return i;
+    }
 };
+
+const WordClass = enum { space, char, punct };
+
+fn classify(byte: u8) WordClass {
+    const is_char = (byte >= 'A' and byte <= 'Z') or (byte >= 'a' and byte <= 'z');
+    const is_digit = (byte >= '0' and byte <= '9');
+    if (is_char or is_digit or byte == '_') return .char;
+    if (byte == ' ' or byte == '\t' or byte == '\n' or byte == '\r') return .space;
+    return .punct;
+}
