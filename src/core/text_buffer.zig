@@ -164,15 +164,20 @@ pub const TextBuffer = struct {
                     const pieces = leafPiecesConst(node).items;
                     var acc: usize = 0;
                     var i: usize = 0;
-                    while (i < pieces.len and remaining > 0) : (i += 1) {
+                    const k: usize = @intCast(node.known_prefix);
+                    while (i < k) : (i += 1) {
                         const piece = &pieces[i];
+                        // given this is within the known prefix, this is cached and cheap
                         const lines_in_piece = try self.countLinesInPiece(piece);
-                        if (remaining <= lines_in_piece) {
-                            return offset + acc + (try self.findNthNewlineInPiece(piece, remaining)) + 1;
-                        } else {
-                            remaining -= lines_in_piece;
-                            acc += piece.len();
-                        }
+                        if (remaining <= lines_in_piece) break;
+                        remaining -= lines_in_piece;
+                        acc += piece.len();
+                    }
+                    // case where the target line is in a partially unscanned piece or newline is partway into a piece
+                    if (i < pieces.len and remaining > 0) {
+                        const piece = &pieces[i];
+                        const within_piece = try self.findNthNewlineInPiece(piece, remaining);
+                        return offset + acc + within_piece + 1;
                     }
                     // edge case, newline at the very end of the piece
                     return offset + acc;
