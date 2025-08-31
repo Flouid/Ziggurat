@@ -41,14 +41,12 @@ pub const TextBuffer = struct {
             try leafPieces(leaf).append(alloc, Piece.init(.Original, span));
             leaf.weight_bytes = span.len;
         }
-        var engine = TextBuffer{
+        return TextBuffer{
             .original = original,
             .root = leaf,
             .doc_len = original.len,
             .alloc = alloc,
         };
-        if (span.len > 0) leaf.weight_lines = try engine.o_idx.countRange(alloc, original, span);
-        return engine;
     }
 
     pub fn deinit(self: *TextBuffer) void {
@@ -154,7 +152,8 @@ pub const TextBuffer = struct {
 
     pub fn byteOfLine(self: *TextBuffer, line: usize) error{OutOfMemory}!usize {
         // map any line number to an index in the working document
-        debug.dassert(line <= self.root.weight_lines, "line out of range");
+        const in_buffer = try self.scanNodeUntil(self.root, line);
+        debug.dassert(in_buffer, "line out of range");
         var node = self.root;
         var remaining = line;
         var offset: usize = 0;
@@ -194,6 +193,11 @@ pub const TextBuffer = struct {
             }
         }
         @panic("max iterations reached without finding line in document");
+    }
+
+    pub fn ensureScanned(self: *TextBuffer, line: usize) error{OutOfMemory}!void {
+        // expose a method to ensure at least up to a certain line has been scanned if it exists
+        _ = try self.scanNodeUntil(self.root, line);
     }
 
     pub fn peek(self: *const TextBuffer, at: usize) u8 {
@@ -623,11 +627,11 @@ pub const TextBuffer = struct {
                             node.weight_lines += try self.a_idx.countRange(self.alloc, self.add.items, span);
                             node.known_prefix += 1;
                             node.frontier_byte = 0;
-                        }
+                        },
                     }
                 }
                 const delta = node.weight_lines - old_weight;
-                if (delta > 0 and node.parent) bubbleLineDelta(node.parent.?, delta, false);
+                if (delta > 0 and node.parent != null) bubbleLineDelta(node.parent.?, delta, false);
             },
             .internal => {
                 const children = childListConst(node).items;

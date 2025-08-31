@@ -50,6 +50,11 @@ pub const Document = struct {
     pub fn size(self: *const Document) usize {
         return self.buffer.doc_len;
     }
+    pub fn revealUpTo(self: *Document, line: usize) error{OutOfMemory}!void {
+        // line count will be accurate up to at least the given value
+        // layout needs this to make sure that any lines which may appear on the screen have been scanned
+        try self.buffer.ensureScanned(line);
+    }
     pub fn lineCount(self: *const Document) usize {
         return self.buffer.root.weight_lines + 1;
     }
@@ -294,7 +299,6 @@ pub const Document = struct {
     }
 
     pub fn lineSpan(self: *Document, line: usize) error{OutOfMemory}!Span {
-        debug.dassert(line < self.lineCount(), "line outside of document");
         const start = try self.lineStart(line);
         const end = try self.lineEnd(line);
         debug.dassert(end >= start, "line cannot have negative length");
@@ -307,12 +311,10 @@ pub const Document = struct {
     // navigation helpers
 
     fn lineStart(self: *Document, line: usize) error{OutOfMemory}!usize {
-        debug.dassert(line < self.lineCount(), "line outside of document");
         return self.buffer.byteOfLine(line);
     }
 
     fn lineEnd(self: *Document, line: usize) error{OutOfMemory}!usize {
-        debug.dassert(line < self.lineCount(), "line outside of document");
         return if (line + 1 < self.lineCount()) self.buffer.byteOfLine(line + 1) else self.size();
     }
 
@@ -325,7 +327,6 @@ pub const Document = struct {
     }
 
     fn posToByte(self: *Document, pos: TextPos) error{OutOfMemory}!usize {
-        debug.dassert(pos.row < self.lineCount(), "line outside of document");
         const span = try self.lineSpan(pos.row);
         debug.dassert(pos.col <= span.len, "column outside of line");
         const start = try self.buffer.byteOfLine(pos.row);

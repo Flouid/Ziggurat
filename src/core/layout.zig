@@ -13,6 +13,8 @@ pub const Layout = struct {
     caret: ?ScreenPos,
 
     pub fn init(arena: std.mem.Allocator, doc: *Document, vp: *const Viewport) error{OutOfMemory}!Layout {
+        const bottom_line = vp.top_line + vp.dims.h;
+        try doc.revealUpTo(bottom_line);
         const total = doc.lineCount();
         const visible_rows = @min(vp.dims.h, total - vp.top_line);
         var lines = try arena.alloc(Span, visible_rows);
