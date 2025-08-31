@@ -34,7 +34,6 @@ const App = struct {
         // initialize document
         if (self.path_in) |p| {
             const bytes = try file_io.read(gpa, p);
-            defer gpa.free(bytes);
             self.doc = try Document.init(gpa, bytes);
         } else {
             self.doc = try Document.init(gpa, "");

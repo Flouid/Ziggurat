@@ -26,16 +26,14 @@ pub const Document = struct {
     max_cols: usize = 0,
 
     pub fn init(alloc: std.mem.Allocator, original: []const u8) error{ OutOfMemory, FileTooBig }!Document {
-        // creating an owned copy gives the document full ownership, even over string literals
-        const owned = try alloc.dupe(u8, original);
         return .{
-            .buffer = try TextBuffer.init(alloc, owned),
+            .buffer = try TextBuffer.init(alloc, original),
             .caret = .{
                 .byte = 0,
                 .pos = .{ .row = 0, .col = 0 },
                 .preferred_col = 0,
             },
-            .owned_src = owned,
+            .owned_src = original,
             .alloc = alloc,
         };
     }

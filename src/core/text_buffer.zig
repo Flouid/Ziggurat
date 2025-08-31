@@ -1148,26 +1148,22 @@ const NewLineIndex = struct {
         // number of newlines in the first partial page
         const in_partial = utils.countNewlinesInSlice(buf[start..page_end]);
         if (n <= in_partial) return utils.indexOfKthNewlineInRange(buf, start, page_end, n);
-        // now ensure the whole buffer has been scanned
-        const remaining = n - in_partial;
+        // now walk forward by pages until we find the nth newline
+        var remaining = n - in_partial;
         const last_page = (buf.len - 1) / PAGE_SIZE;
-        self.ensurePage(buf, last_page);
         const prefix = self.prefix.items;
-        // binary search the prefilled pages until the page containing the nth newline is found
-        var lo = page_start + 1;
-        var hi = last_page;
-        while (lo < hi) {
-            const mid = lo + (hi - lo) / 2;
-            const between = prefix[mid] - prefix[page_start];
-            if (between >= remaining) hi = mid else lo = mid + 1;
+        var p = page + 1;
+        while (p <= last_page) : (p += 1) {
+            self.ensurePage(buf, p);
+            const in_page = prefix[p] - prefix[p - 1];
+            if (remaining <= in_page) {
+                const begin = p * PAGE_SIZE;
+                const end = @min(begin + PAGE_SIZE, buf.len);
+                return utils.indexOfKthNewlineInRange(buf, begin, end, remaining);
+            }
+            remaining -= in_page;
         }
-        const target_page = lo;
-        const before_target = prefix[target_page - 1] - prefix[page_start];
-        // need the kth newline inside the target page
-        const k = remaining - before_target;
-        const target_begin = target_page * PAGE_SIZE;
-        const target_end = @min(target_begin + PAGE_SIZE, buf.len);
-        return utils.indexOfKthNewlineInRange(buf, target_begin, target_end, k);
+        @panic("newline not in document");
     }
 };
 
