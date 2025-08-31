@@ -548,6 +548,7 @@ pub const TextBuffer = struct {
     fn countLinesInPieceRange(self: *TextBuffer, p: *Piece, offset: usize, len: usize) error{OutOfMemory}!usize {
         // count newlines within some subset of a piece's bytes
         const span: Span = .{ .start = p.off + offset, .len = len };
+        debug.dassert(span.end() <= p.off + p.len(), "cannot count lines past the end of the piece");
         switch (p.buf()) {
             .Original => return self.o_idx.countRange(self.alloc, self.original, span),
             .Add => return self.a_idx.countRange(self.alloc, self.add.items, span),
@@ -583,6 +584,62 @@ pub const TextBuffer = struct {
             .Add => try self.a_idx.NthNewlineAfter(self.alloc, self.add.items, p.off, n),
         };
         return idx - p.off;
+    }
+
+    fn scanNodeUntil(self: *TextBuffer, node: *Node, line: usize) error{OutOfMemory}!bool {
+        // scan a subsection of the tree recursively until enough lines have been seen to satisfy the query
+        // if there are enough lines in the tree, return true. Otherwise false
+        if (line <= node.weight_lines or isExact(node)) return true;
+        var i = node.known_prefix;
+        switch (node.children) {
+            .leaf => {
+                const pieces = leafPiecesConst(node).items;
+                const old_weight = node.weight_lines;
+                while (i < pieces.len and node.weight_lines < line) : (i += 1) {
+                    const p = pieces[i];
+                    var start = p.off + node.frontier_byte;
+                    const end = p.off + p.len();
+                    switch (p.buf()) {
+                        .Original => {
+                            // pieces from the original document may be enormous, multiple GB.
+                            // We don't want to just count the entire piece in one batch, rather advance page-by-page
+                            // until we've seen enough newlines to satisfy the query
+                            while (node.weight_lines < line and start < end) {
+                                const page = start / PAGE_SIZE;
+                                const page_end = @min((page + 1) * PAGE_SIZE, end);
+                                const span: Span = .{ .start = start, .len = page_end - start };
+                                node.weight_lines += try self.o_idx.countRange(self.alloc, self.original, span);
+                                start = page_end;
+                                node.frontier_byte += span.len;
+                                if (node.frontier_byte == p.len()) {
+                                    node.known_prefix += 1;
+                                    node.frontier_byte = 0;
+                                }
+                            }
+                        },
+                        .Add => {
+                            // pieces from the add buffer can generally be assumed to be small enough to count in a single batch
+                            const span: Span = .{ .start = start, .len = p.len() - node.frontier_byte };
+                            node.weight_lines += try self.a_idx.countRange(self.alloc, self.add.items, span);
+                            node.known_prefix += 1;
+                            node.frontier_byte = 0;
+                        }
+                    }
+                }
+                const delta = node.weight_lines - old_weight;
+                if (delta > 0 and node.parent) bubbleLineDelta(node.parent.?, delta, false);
+            },
+            .internal => {
+                const children = childListConst(node).items;
+                while (i < children.len and node.weight_lines < line) : (i += 1) {
+                    const remaining = line - node.weight_lines;
+                    const child_goal = children[i].weight_lines + remaining;
+                    _ = try self.scanNodeUntil(children[i], child_goal);
+                    if (isExact(children[i])) node.known_prefix += 1;
+                }
+            },
+        }
+        return node.weight_lines >= line;
     }
 };
 
@@ -661,6 +718,10 @@ const Node = struct {
     parent: ?*Node = null,
     weight_bytes: usize = 0,
     weight_lines: usize = 0,
+    // number of children that are known to have a correct line weight. left -> right
+    known_prefix: u8 = 0,
+    // FOR LEAVES ONLY, byte offset into the last scanned piece of frontier
+    frontier_byte: usize = 0,
     // tagged union makes mutual exclusivity between node types explicit.
     // also keeps node size as small as possible by not storing two headers
     children: union(enum) { internal: std.ArrayList(*Node), leaf: std.ArrayList(Piece) },
@@ -749,10 +810,14 @@ fn nodeMax(node: *const Node) usize {
     return if (isLeaf(node)) MAX_PIECES else MAX_BRANCH;
 }
 
-fn spareNodes(node: *Node) usize {
+fn spareNodes(node: *const Node) usize {
     const count = nodeCount(node);
     const min = nodeMin(node);
     return if (count > min) count - min else 0;
+}
+
+fn isExact(node: *const Node) bool {
+    return node.known_prefix == nodeCount(node);
 }
 
 // navigation within a document and within a leaf
