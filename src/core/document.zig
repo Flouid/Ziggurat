@@ -93,12 +93,13 @@ pub const Document = struct {
         // if the cursor is at the start of the document, silently do nothing
         if (c.byte == 0) return;
         const start = c.byte - take;
+        const span: Span = .{ .start = start, .len = take };
         // use a slice iterator to look at what's getting deleted and count newlines
-        var it = self.buffer.getSliceIter(start, take);
+        var it = self.buffer.getSliceIter(span);
         var newlines: usize = 0;
         while (it.next()) |slice| newlines += utils.countNewlinesInSlice(slice);
         // actually delete from the textbuffer
-        try self.buffer.delete(start, take);
+        try self.buffer.delete(span);
         // perform cursor update
         c.byte -= take;
         if (newlines == 0) {
@@ -282,9 +283,9 @@ pub const Document = struct {
 
     // materialization and span generation
 
-    pub fn materializeRange(self: *Document, w: anytype, start: usize, len: usize) !void {
+    pub fn materializeRange(self: *Document, w: anytype, span: Span) !void {
         // pass-through method for materializing a range of bytes
-        try self.buffer.materializeRange(w, start, len);
+        try self.buffer.materializeRange(w, span);
     }
 
     pub fn materialize(self: *Document, w: anytype) !void {

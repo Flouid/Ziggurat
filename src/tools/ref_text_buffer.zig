@@ -1,5 +1,6 @@
 const std = @import("std");
 const debug = @import("debug");
+const Span = @import("types").Span;
 
 // The piece-table implementation for storing edits to a document efficiently in memory.
 // This was a relatively simple first pass implementation to understand the idea and get it working.
@@ -107,17 +108,17 @@ pub const TextBuffer = struct {
         try self.rebuildPrefix(idx);
     }
 
-    pub fn delete(self: *TextBuffer, at: usize, count: usize) error{OutOfMemory}!void {
-        debug.dassert(at + count <= self.doc_len, "cannot delete outside of document");
-        debug.dassert(count > 0, "cannot delete 0 characters");
+    pub fn delete(self: *TextBuffer, span: Span) error{OutOfMemory}!void {
+        debug.dassert(span.end() <= self.doc_len, "cannot delete outside of document");
+        debug.dassert(span.len > 0, "cannot delete 0 characters");
         debug.dassert(self.pieces.items.len > 0, "cannot delete from empty document");
-        var idx = self.findPiece(at);
+        var idx = self.findPiece(span.start);
         const old = &self.pieces.items[idx];
         const start_idx = self.prefix.items[idx];
-        const len_prefix = at - start_idx;
+        const len_prefix = span.start - start_idx;
         // case 1: deletion localized in a single piece
-        if (count <= old.len - len_prefix) {
-            const len_posfix = old.len - len_prefix - count;
+        if (span.len <= old.len - len_prefix) {
+            const len_posfix = old.len - len_prefix - span.len;
             // delete the entire piece
             if (len_prefix == 0 and len_posfix == 0) {
                 _ = self.pieces.orderedRemove(idx);
@@ -128,19 +129,19 @@ pub const TextBuffer = struct {
             }
             // keep just the posfix
             else if (len_prefix == 0 and len_posfix > 0) {
-                old.off += count;
+                old.off += span.len;
                 old.len = len_posfix;
             }
             // split piece into prefix and posfix
             else {
                 old.len = len_prefix;
-                const posfix = Piece{ .buf = old.buf, .off = old.off + len_prefix + count, .len = len_posfix };
+                const posfix = Piece{ .buf = old.buf, .off = old.off + len_prefix + span.len, .len = len_posfix };
                 try self.pieces.insert(self.alloc, idx + 1, posfix);
             }
         }
         // case 2: deletion spans multiple pieces
         else {
-            var remain = count;
+            var remain = span.len;
             // lucky edge case: deletion lines up with current piece start
             if (len_prefix == 0) {
                 remain -= old.len;
@@ -165,7 +166,7 @@ pub const TextBuffer = struct {
                 }
             }
         }
-        self.doc_len -= count;
+        self.doc_len -= span.len;
         // last piece deleted, early return
         if (self.pieces.items.len == 0) {
             try self.rebuildPrefix(0);

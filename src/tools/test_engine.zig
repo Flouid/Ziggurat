@@ -1,37 +1,32 @@
 const std = @import("std");
 const debug = @import("debug");
 const utils = @import("utils");
-const RefEngine = @import("ref_buffer").TextBuffer;
-const NewEngine = @import("buffer").TextBuffer;
+const RefBuffer = @import("ref_buffer").TextBuffer;
+const NewBuffer = @import("buffer").TextBuffer;
+const Span = @import("types").Span;
 
 // -------------------- TEST FIXTURE IMPLEMENTATION --------------------
-
-const Location = struct {
-    // wraps a starting index and length for a text operation
-    at: usize,
-    len: usize,
-};
 
 const OPType = enum { I, D };
 
 const TextOp = struct {
     // wraps an insert or a delete as a struct
-    loc: Location,
+    span: Span,
     text: []const u8,
     op: OPType,
 
-    fn initInsert(loc: Location, text: []const u8) TextOp {
-        return TextOp{ .loc = loc, .text = text, .op = .I };
+    fn initInsert(span: Span, text: []const u8) TextOp {
+        return TextOp{ .span = span, .text = text, .op = .I };
     }
 
-    fn initDelete(loc: Location) TextOp {
-        return TextOp{ .loc = loc, .text = undefined, .op = .D };
+    fn initDelete(span: Span) TextOp {
+        return TextOp{ .span = span, .text = undefined, .op = .D };
     }
 
     pub fn format(self: TextOp, writer: anytype) !void {
         switch (self.op) {
-            .I => try writer.print("I {d} {d} : {s}", .{ self.loc.at, self.loc.len, self.text }),
-            .D => try writer.print("D {d} {d}", .{ self.loc.at, self.loc.len }),
+            .I => try writer.print("I {d} {d} : {s}", .{ self.span.start, self.span.len, self.text }),
+            .D => try writer.print("D {d} {d}", .{ self.span.start, self.span.len }),
         }
     }
 };
@@ -63,10 +58,10 @@ const TestFixture = struct {
 
 // -------------------- TEST RUNNER IMPLEMENTATION --------------------
 
-fn replayWithEngine(comptime Engine: type, alloc: std.mem.Allocator, init_text: []const u8, ops: []const TextOp) ![]const u8 {
+fn replayWithBuffer(comptime Buffer: type, alloc: std.mem.Allocator, init_text: []const u8, ops: []const TextOp) ![]const u8 {
     try utils.printf("Initializing text engine ... ", .{});
     var timer = try std.time.Timer.start();
-    var editor = try Engine.init(alloc, init_text);
+    var editor = try Buffer.init(alloc, init_text);
     defer editor.deinit();
     const init_ns = timer.read();
     try utils.printf("Completed in {d} ms\n", .{init_ns / 1_000_000});
@@ -75,8 +70,8 @@ fn replayWithEngine(comptime Engine: type, alloc: std.mem.Allocator, init_text: 
     for (ops, 0..) |op, i| {
         if (i % 1000 == 0) try utils.printf("Performing Ops: {d: >7} / {d: >7}\r", .{ i, ops.len });
         switch (op.op) {
-            .I => try editor.insert(op.loc.at, op.text),
-            .D => try editor.delete(op.loc.at, op.loc.len),
+            .I => try editor.insert(op.span.start, op.text),
+            .D => try editor.delete(op.span),
         }
     }
     const run_ns = timer.read();
@@ -104,8 +99,8 @@ const MIN_EDIT_LEN = 1;
 const MAX_EDIT_LEN = 8;
 const LONG_MULT = 100;
 
-fn getLoc(rng: *utils.RNG, is_long: bool, doc_len: usize) Location {
-    // randomly sample any location inside the document.
+fn getSpan(rng: *utils.RNG, is_long: bool, doc_len: usize) Span {
+    // randomly sample any span inside the document.
     // suitable as-is for appends, deletes require OOB verification
     const at: usize = rng.randInt(usize, 0, doc_len + 1);
     var len: usize = undefined;
@@ -114,26 +109,26 @@ fn getLoc(rng: *utils.RNG, is_long: bool, doc_len: usize) Location {
     } else {
         len = rng.randInt(usize, MIN_EDIT_LEN * LONG_MULT, MAX_EDIT_LEN * LONG_MULT);
     }
-    return .{ .at = at, .len = len };
+    return .{ .start = at, .len = len };
 }
 
-fn getSafeLoc(rng: *utils.RNG, op_type: OPType, is_long: bool, doc_len: usize) Location {
-    // helper to generate a safe location to perform any operation at
+fn getSafeSpan(rng: *utils.RNG, op_type: OPType, is_long: bool, doc_len: usize) Span {
+    // helper to generate a safe span to perform any operation at
     switch (op_type) {
-        .I => return getLoc(rng, is_long, doc_len),
+        .I => return getSpan(rng, is_long, doc_len),
         .D => {
             debug.dassert(doc_len != 0, "cannot delete from empty document");
             // choose [at, at+len) fully inside [0, doc_len)
             while (true) {
-                const loc = getLoc(rng, is_long, doc_len);
-                if (loc.len <= doc_len - loc.at) return loc;
+                const span = getSpan(rng, is_long, doc_len);
+                if (span.end() <= doc_len) return span;
             }
         },
     }
 }
 
-fn generateText(a: std.mem.Allocator, rng: *utils.RNG, loc: Location) ![]u8 {
-    var buf = try a.alloc(u8, loc.len);
+fn generateText(a: std.mem.Allocator, rng: *utils.RNG, span: Span) ![]u8 {
+    var buf = try a.alloc(u8, span.len);
     var i: usize = 0;
     while (i < buf.len) : (i += 1) {
         // printable ASCII is [32, 127)
@@ -160,7 +155,7 @@ fn generateOps(a: std.mem.Allocator, rng: *utils.RNG, cfg: GenConfig, init_doc_l
             op_type = .I;
         } else op_type = .D;
         const is_long = rng.randInt(u8, 0, 100) < cfg.p_long;
-        const loc = getSafeLoc(rng, op_type, is_long, exp_doc_len);
+        const loc = getSafeSpan(rng, op_type, is_long, exp_doc_len);
         switch (op_type) {
             .I => {
                 const text = try generateText(a, rng, loc);
@@ -191,7 +186,7 @@ fn generateFixture(alloc: std.mem.Allocator, cfg: GenConfig, init_text: []const 
     var ops = try generateOps(a, &rng, cfg, init_text.len);
     fixture.ops = try ops.toOwnedSlice(a);
 
-    fixture.final_text = try replayWithEngine(RefEngine, a, fixture.init_text, fixture.ops);
+    fixture.final_text = try replayWithBuffer(RefBuffer, a, fixture.init_text, fixture.ops);
 
     return fixture;
 }
@@ -257,7 +252,7 @@ fn parseInsertLine(arena: std.mem.Allocator, line_in: []const u8) !TextOp {
     const text = try arena.alloc(u8, len);
     @memcpy(text, right);
 
-    return TextOp.initInsert(.{ .at = at, .len = len }, text);
+    return TextOp.initInsert(.{ .start = at, .len = len }, text);
 }
 
 fn parseDeleteLine(line_in: []const u8) !TextOp {
@@ -270,7 +265,7 @@ fn parseDeleteLine(line_in: []const u8) !TextOp {
     const at = try std.fmt.parseInt(usize, at_s, 10);
     const len = try std.fmt.parseInt(usize, len_s, 10);
 
-    return TextOp.initDelete(.{ .at = at, .len = len });
+    return TextOp.initDelete(.{ .start = at, .len = len });
 }
 
 pub fn parseFixtureFromPath(parent_alloc: std.mem.Allocator, path: []const u8) !TestFixture {
@@ -361,7 +356,7 @@ pub fn testFixture(a: std.mem.Allocator, path_in: []const u8) !bool {
     const parse_ns = timer.read();
     try utils.printf("Completed in {d} ms\n", .{parse_ns / 1_000_000});
 
-    const final_text = try replayWithEngine(NewEngine, a, fixture.init_text, fixture.ops);
+    const final_text = try replayWithBuffer(NewBuffer, a, fixture.init_text, fixture.ops);
     defer a.free(final_text);
     const match = std.mem.eql(u8, fixture.final_text, final_text);
 

@@ -1,6 +1,7 @@
 const std = @import("std");
 const debug = @import("debug");
 const utils = @import("utils");
+const Span = @import("types").Span;
 
 // The piece-tree implementation for storing edits to a document efficiently in memory.
 // There are two distinct but highly coupled data structures implemented here.
@@ -35,9 +36,10 @@ pub const TextBuffer = struct {
         if (original.len >= limit) return error.FileTooBig;
         // initialize the root of the tree
         const leaf = try initLeaf(alloc);
-        if (original.len > 0) {
-            try leafPieces(leaf).append(alloc, Piece.init(.Original, original.len, 0));
-            leaf.weight_bytes = original.len;
+        const span: Span = .{ .start = 0, .len = original.len };
+        if (span.len > 0) {
+            try leafPieces(leaf).append(alloc, Piece.init(.Original, span));
+            leaf.weight_bytes = span.len;
         }
         var engine = TextBuffer{
             .original = original,
@@ -45,7 +47,7 @@ pub const TextBuffer = struct {
             .doc_len = original.len,
             .alloc = alloc,
         };
-        if (original.len > 0) leaf.weight_lines = try engine.o_idx.countRange(alloc, original, 0, original.len);
+        if (span.len > 0) leaf.weight_lines = try engine.o_idx.countRange(alloc, original, span);
         return engine;
     }
 
@@ -59,23 +61,23 @@ pub const TextBuffer = struct {
     pub fn insert(self: *TextBuffer, at: usize, text: []const u8) error{OutOfMemory}!void {
         debug.dassert(at <= self.doc_len, "cannot insert outside of the document.");
         debug.dassert(text.len > 0, "cannot insert empty text");
-        const add_offset = self.add.items.len;
+        const span: Span = .{ .start = self.add.items.len, .len = text.len };
         try self.add.appendSlice(self.alloc, text);
         // count how many newlines just got added
-        const newlines = try self.a_idx.countRange(self.alloc, self.add.items, add_offset, text.len);
+        const newlines = try self.a_idx.countRange(self.alloc, self.add.items, span);
         // find the leaf node that corresponds to the insertion index
         const found = findAt(self.root, at);
         const leaf = found.leaf;
         const pieces = leafPieces(leaf);
         // under the ideal case, new edits are appended to the end and extend an existing piece
-        if (fastAppendIfPossible(leaf, add_offset, text.len, at, self.doc_len)) {
+        if (fastAppendIfPossible(leaf, span, at, self.doc_len)) {
             bubbleByteDelta(leaf, text.len, false);
             bubbleLineDelta(leaf, newlines, false);
             self.doc_len += text.len;
             return;
         }
         const loc = locateInLeaf(leaf, found.offset);
-        const idx = try spliceIntoLeaf(pieces, self.alloc, loc, add_offset, text.len);
+        const idx = try spliceIntoLeaf(pieces, self.alloc, loc, span);
         mergeAround(leaf, idx);
         bubbleByteDelta(leaf, text.len, false);
         bubbleLineDelta(leaf, newlines, false);
@@ -83,11 +85,11 @@ pub const TextBuffer = struct {
         self.doc_len += text.len;
     }
 
-    pub fn delete(self: *TextBuffer, at: usize, len: usize) error{OutOfMemory}!void {
-        debug.dassert(at + len <= self.doc_len, "cannot delete outside of document");
-        debug.dassert(len > 0, "cannot delete empty span");
-        var remaining = len;
-        const found = findAt(self.root, at);
+    pub fn delete(self: *TextBuffer, span: Span) error{OutOfMemory}!void {
+        debug.dassert(span.end() <= self.doc_len, "cannot delete outside of document");
+        debug.dassert(span.len > 0, "cannot delete empty span");
+        var remaining = span.len;
+        const found = findAt(self.root, span.start);
         var leaf = found.leaf;
         var offset = found.offset;
         const left: *Node = leaf;
@@ -105,7 +107,7 @@ pub const TextBuffer = struct {
             }
         }
         try self.repairAfterDelete(left, leaf);
-        self.doc_len -= len;
+        self.doc_len -= span.len;
     }
 
     pub fn lineOfByte(self: *TextBuffer, at: usize) error{OutOfMemory}!usize {
@@ -208,22 +210,22 @@ pub const TextBuffer = struct {
         return src[pos];
     }
 
-    pub fn materializeRange(self: *TextBuffer, w: anytype, start: usize, len: usize) !void {
+    pub fn materializeRange(self: *TextBuffer, w: anytype, span: Span) !void {
         // when a view should be written directly to a writer
-        if (len == 0) return;
-        var it = self.getSliceIter(start, len);
+        if (span.len == 0) return;
+        var it = self.getSliceIter(span);
         while (it.next()) |slice| try w.writeAll(slice);
     }
 
     pub fn materialize(self: *TextBuffer, w: anytype) !void {
         // when the entire document should be written directly to a writer (e.g. saving)
-        try self.materializeRange(w, 0, self.doc_len);
+        try self.materializeRange(w, .{ .start = 0, .len = self.doc_len });
     }
 
-    pub fn getSliceIter(self: *TextBuffer, start: usize, len: usize) SliceIter {
-        debug.dassert(start + len <= self.doc_len, "view out of bounds");
-        debug.dassert(len > 0, "cannot provide an empty view");
-        return SliceIter.init(self, start, len);
+    pub fn getSliceIter(self: *TextBuffer, span: Span) SliceIter {
+        debug.dassert(span.end() <= self.doc_len, "view out of bounds");
+        debug.dassert(span.len > 0, "cannot provide an empty view");
+        return SliceIter.init(self, span);
     }
 
     // -------------------- EVERYTHING BENEATH THIS LINE IS A PRIVATE IMPLEMENTATION DETAIL --------------------
@@ -536,17 +538,19 @@ pub const TextBuffer = struct {
 
     fn countLinesInPiece(self: *TextBuffer, p: *Piece) error{OutOfMemory}!usize {
         // count all newlines in a piece
+        const span: Span = .{ .start = p.off, .len = p.len() };
         switch (p.buf()) {
-            .Original => return self.o_idx.countRange(self.alloc, self.original, p.off, p.len()),
-            .Add => return self.a_idx.countRange(self.alloc, self.add.items, p.off, p.len()),
+            .Original => return self.o_idx.countRange(self.alloc, self.original, span),
+            .Add => return self.a_idx.countRange(self.alloc, self.add.items, span),
         }
     }
 
     fn countLinesInPieceRange(self: *TextBuffer, p: *Piece, offset: usize, len: usize) error{OutOfMemory}!usize {
         // count newlines within some subset of a piece's bytes
+        const span: Span = .{ .start = p.off + offset, .len = len };
         switch (p.buf()) {
-            .Original => return self.o_idx.countRange(self.alloc, self.original, p.off + offset, len),
-            .Add => return self.a_idx.countRange(self.alloc, self.add.items, p.off + offset, len),
+            .Original => return self.o_idx.countRange(self.alloc, self.original, span),
+            .Add => return self.a_idx.countRange(self.alloc, self.add.items, span),
         }
     }
 
@@ -637,10 +641,10 @@ const Piece = struct {
         self.len_and_buf = compose(self.len() - delta, self.buf());
     }
 
-    fn init(buffer: Buffer, length: usize, offset: usize) Piece {
-        debug.dassert((length & hi_bit) == 0, "file size must be at most half of your system's virtual address space");
+    fn init(buffer: Buffer, span: Span) Piece {
+        debug.dassert((span.len & hi_bit) == 0, "file size must be at most half of your system's virtual address space");
         const flag: usize = if (buffer == .Add) hi_bit else 0;
-        return .{ .off = offset, .len_and_buf = length | flag };
+        return .{ .off = span.start, .len_and_buf = span.len | flag };
     }
 };
 
@@ -881,24 +885,24 @@ fn mergeAround(leaf: *Node, idx: usize) void {
 
 // helpers for editing nodes
 
-fn fastAppendIfPossible(leaf: *Node, add_off: usize, add_len: usize, at: usize, doc_len: usize) bool {
+fn fastAppendIfPossible(leaf: *Node, span: Span, at: usize, doc_len: usize) bool {
     // happy path, appending to the end of the add buffer
     if (at != doc_len) return false;
     const pieces = leafPieces(leaf).items;
     if (pieces.len == 0) return false;
     const last = &pieces[pieces.len - 1];
     // only valid if the last piece is from the add buffer and contiguous with new entry
-    if (last.buf() == .Add and last.off + last.len() == add_off) {
-        last.growBy(add_len);
+    if (last.buf() == .Add and last.off + last.len() == span.start) {
+        last.growBy(span.len);
         return true;
     }
     return false;
 }
 
-fn spliceIntoLeaf(pieces: *std.ArrayList(Piece), alloc: std.mem.Allocator, loc: InLeaf, add_off: usize, add_len: usize) error{OutOfMemory}!usize {
+fn spliceIntoLeaf(pieces: *std.ArrayList(Piece), alloc: std.mem.Allocator, loc: InLeaf, span: Span) error{OutOfMemory}!usize {
     // generic path, build 1-3 replacement pieces and insert them into the piece table.
     // The return is the index of the newly inserted piece
-    const new_piece = Piece.init(.Add, add_len, add_off);
+    const new_piece = Piece.init(.Add, span);
     const len = pieces.items.len;
     if (loc.piece_idx < len) {
         const old = pieces.items[loc.piece_idx];
@@ -1034,18 +1038,17 @@ const NewLineIndex = struct {
         }
     }
 
-    fn countRange(self: *NewLineIndex, alloc: std.mem.Allocator, buf: []const u8, start: usize, len: usize) error{OutOfMemory}!usize {
-        if (len == 0) return 0;
+    fn countRange(self: *NewLineIndex, alloc: std.mem.Allocator, buf: []const u8, span: Span) error{OutOfMemory}!usize {
+        if (span.len == 0) return 0;
         try self.ensureCapacityForLen(alloc, buf.len);
-        const end = start + len;
-        const page_0 = start / PAGE_SIZE;
-        const page_1 = (end - 1) / PAGE_SIZE;
+        const page_0 = span.start / PAGE_SIZE;
+        const page_1 = (span.end() - 1) / PAGE_SIZE;
         // range inside a single page, count directly
-        if (page_0 == page_1) return utils.countNewlinesInSlice(buf[start..end]);
+        if (page_0 == page_1) return utils.countNewlinesInSlice(buf[span.start..span.end()]);
         // generic case: we count left and right edges and middle is handled by precomputed prefixes
         var total: usize = 0;
         const left_edge = (page_0 + 1) * PAGE_SIZE;
-        total += utils.countNewlinesInSlice(buf[start..left_edge]);
+        total += utils.countNewlinesInSlice(buf[span.start..left_edge]);
         // ensure prefixes are counted up to and including the end page
         self.ensurePage(buf, page_1);
         // use prefix differences for interior pages
@@ -1056,7 +1059,7 @@ const NewLineIndex = struct {
         }
         // right partial page
         const right_edge = page_1 * PAGE_SIZE;
-        total += utils.countNewlinesInSlice(buf[right_edge..end]);
+        total += utils.countNewlinesInSlice(buf[right_edge..span.end()]);
         return total;
     }
 
@@ -1105,16 +1108,16 @@ pub const SliceIter = struct {
     piece_offset: usize,
     remaining: usize,
 
-    fn init(buffer: *TextBuffer, start: usize, len: usize) SliceIter {
+    fn init(buffer: *TextBuffer, span: Span) SliceIter {
         // find the location corresponding to the start of the range
-        const found = findAt(buffer.root, start);
+        const found = findAt(buffer.root, span.start);
         const loc = locateInLeaf(found.leaf, found.offset);
         return .{
             .buffer = buffer,
             .leaf = found.leaf,
             .piece_idx = loc.piece_idx,
             .piece_offset = loc.offset,
-            .remaining = len,
+            .remaining = span.len,
         };
     }
 

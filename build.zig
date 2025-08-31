@@ -44,6 +44,12 @@ fn addCoreModules(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std
         .imports = &.{.{ .name = "debug", .module = debug_mod }},
     });
 
+    const types_mod = b.addModule("types", .{
+        .root_source_file = b.path("src/core/types.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const ref_buffer_mod = b.addModule("ref_buffer", .{
         .root_source_file = b.path("src/tools/ref_text_buffer.zig"),
         .target = target,
@@ -51,6 +57,7 @@ fn addCoreModules(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std
         .imports = &.{
             .{ .name = "debug", .module = debug_mod },
             .{ .name = "utils", .module = utils_mod },
+            .{ .name = "types", .module = types_mod },
         },
     });
 
@@ -61,13 +68,8 @@ fn addCoreModules(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std
         .imports = &.{
             .{ .name = "debug", .module = debug_mod },
             .{ .name = "utils", .module = utils_mod },
+            .{ .name = "types", .module = types_mod },
         },
-    });
-
-    const types_mod = b.addModule("types", .{
-        .root_source_file = b.path("src/core/types.zig"),
-        .target = target,
-        .optimize = optimize,
     });
 
     const doc_mod = b.addModule("document", .{
@@ -197,6 +199,7 @@ fn addApps(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
                 .{ .name = "utils", .module = mods.utils },
                 .{ .name = "ref_buffer", .module = mods.ref_buf },
                 .{ .name = "buffer", .module = mods.buffer },
+                .{ .name = "types", .module = mods.types },
             },
         }),
     });

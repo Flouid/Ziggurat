@@ -113,7 +113,7 @@ pub const Renderer = struct {
         while (row < layout.lines.len) : (row += 1) {
             sdtx.pos(0, @floatFromInt(row));
             const line = layout.lines[row];
-            try doc.materializeRange(&writer, line.start, line.len);
+            try doc.materializeRange(&writer, line);
             writer.flush();
         }
         sdtx.draw();
