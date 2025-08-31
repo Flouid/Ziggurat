@@ -275,7 +275,7 @@ pub const Document = struct {
         self.caret.pos = .{ .row = 0, .col = 0 };
         self.anchor = self.caret;
         // move caret to document end
-        self.caret.byte = self.size() - 1;
+        self.caret.byte = self.size();
         self.caret.pos = try self.byteToPos(self.caret.byte);
         self.caret.preferred_col = self.caret.pos.col;
     }
@@ -335,6 +335,7 @@ pub const Document = struct {
     fn prevWordBoundary(self: *const Document, at: usize) usize {
         var i = at;
         while (i > 0 and classify(self.buffer.peek(i - 1)) == .space) : (i -= 1) {}
+        if (i == 0) return 0;
         i -= 1;
         const class = classify(self.buffer.peek(i));
         while (i > 0 and classify(self.buffer.peek(i - 1)) == class) : (i -= 1) {}
@@ -345,6 +346,7 @@ pub const Document = struct {
         var i = at;
         const n = self.size();
         while (i < n and classify(self.buffer.peek(i)) == .space) : (i += 1) {}
+        if (i == n) return i;
         const class = classify(self.buffer.peek(i));
         while (i < n and classify(self.buffer.peek(i)) == class) : (i += 1) {}
         return i;

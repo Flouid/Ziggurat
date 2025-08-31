@@ -205,7 +205,7 @@ pub const TextBuffer = struct {
         };
         const pos = piece.off + loc.offset;
         debug.dassert(pos < src.len, "piece offset outside of source buffer");
-        return src[pos]; 
+        return src[pos];
     }
 
     pub fn materializeRange(self: *TextBuffer, w: anytype, start: usize, len: usize) !void {
@@ -803,6 +803,7 @@ fn locateInLeaf(leaf: *const Node, offset: usize) InLeaf {
         if (offset < acc + piece.len()) return .{ .piece_idx = idx, .offset = offset - acc };
         acc += piece.len();
     }
+    if (offset == acc) return .{ .piece_idx = len, .offset = 0 };
     @panic("couldn't find offset in leaf");
 }
 
