@@ -172,8 +172,7 @@ pub const TextBuffer = struct {
                     const pieces = leafPiecesConst(node).items;
                     var acc: usize = 0;
                     var i: usize = 0;
-                    const k: usize = @intCast(node.known_prefix);
-                    while (i < k) : (i += 1) {
+                    while (i < node.known_prefix) : (i += 1) {
                         const piece = &pieces[i];
                         // given this is within the known prefix, this is cached and cheap
                         const lines_in_piece = try self.countLinesInPiece(piece);
@@ -802,7 +801,7 @@ const Node = struct {
     weight_bytes: usize = 0,
     weight_lines: usize = 0,
     // number of children that are known to have a correct line weight. left -> right
-    known_prefix: u8 = 0,
+    known_prefix: usize = 0,
     // FOR LEAVES ONLY, byte offset into the last scanned piece of frontier
     frontier_byte: usize = 0,
     // tagged union makes mutual exclusivity between node types explicit.
@@ -909,10 +908,9 @@ fn scannedPrefixBytes(leaf: *const Node) usize {
     // get the total number of bytes which are inside the leaf's scanned prefix
     debug.dassert(isLeaf(leaf), "only leaves have a scanned prefix");
     const pieces = leafPiecesConst(leaf).items;
-    const k: usize = @intCast(leaf.known_prefix);
     var bytes: usize = 0;
     var i: usize = 0;
-    while (i < k) : (i += 1) bytes += pieces[i].len();
+    while (i < leaf.known_prefix) : (i += 1) bytes += pieces[i].len();
     return bytes + leaf.frontier_byte;
 }
 
@@ -923,8 +921,39 @@ fn setScannedPrefix(leaf: *Node, bytes: usize) void {
     var remaining = bytes;
     var i: usize = 0;
     while (i < pieces.len and remaining >= pieces[i].len()) : (i += 1) remaining -= pieces[i].len();
-    leaf.known_prefix = @intCast(i);
+    leaf.known_prefix = i;
     leaf.frontier_byte = remaining;
+}
+
+fn bumpFrontier(leaf: *Node, delta: usize, is_neg: bool) void {
+    debug.dassert(isLeaf(leaf), "only leaves have a scanned frontier");
+    const pieces = leafPiecesConst(leaf).items;
+    var offset = leaf.frontier_byte;
+    var remaining = delta;
+    var i = leaf.known_prefix;
+    while (remaining > 0) {
+        if (is_neg) {
+            const take = @min(offset, remaining);
+            offset -= take;
+            remaining -= take;
+            // only decrement i if we're not done yet
+            if (remaining == 0) break;
+            i -= 1;
+            offset = pieces[i].len();
+        } else {
+            const cap = pieces[i].len() - offset;
+            const take = @min(cap, remaining);
+            offset += take;
+            remaining -= take;
+            // only increment if we're not done yet
+            if (remaining == 0) break;
+            i += 1;
+            offset = 0;
+        }
+    }
+    debug.dassert(i <= nodeCount(leaf), "known prefix overflow");
+    leaf.known_prefix += i;
+    leaf.frontier_byte = offset;
 }
 
 // navigation within a document and within a leaf
