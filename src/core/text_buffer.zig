@@ -24,8 +24,8 @@ pub const TextBuffer = struct {
     // In order to find any given piece in O(log n) time, the collection of pieces is a tree.
     original: []const u8,
     add: std.ArrayList(u8) = .empty,
-    o_idx: NewLineIndex = .{},
-    a_idx: NewLineIndex = .{},
+    o_idx: NewlineIndex = .{},
+    a_idx: NewlineIndex = .{},
     root: *Node,
     doc_len: usize,
     alloc: std.mem.Allocator,
@@ -1064,7 +1064,7 @@ fn planBorrow(node: *Node, siblings: Siblings) BorrowPlan {
 
 const PAGE_SIZE = 16 * 1024;
 
-const NewLineIndex = struct {
+const NewlineIndex = struct {
     // Real-world navigation in documents is generally line-centric.
     // Obviously then, we need a way of representing where the line breaks are to support O(log n) lookup.
     // So we lazily scan only the portions of the document that have been touched and cache results.
@@ -1072,12 +1072,12 @@ const NewLineIndex = struct {
     done: std.ArrayList(bool) = .empty,
     prefix: std.ArrayList(usize) = .empty,
 
-    fn deinit(self: *NewLineIndex, alloc: std.mem.Allocator) void {
+    fn deinit(self: *NewlineIndex, alloc: std.mem.Allocator) void {
         self.done.deinit(alloc);
         self.prefix.deinit(alloc);
     }
 
-    fn ensureCapacityForLen(self: *NewLineIndex, alloc: std.mem.Allocator, buf_len: usize) error{OutOfMemory}!void {
+    fn ensureCapacityForLen(self: *NewlineIndex, alloc: std.mem.Allocator, buf_len: usize) error{OutOfMemory}!void {
         // make sure there are enough pages to account for a given buffer size
         const pages = std.math.divCeil(usize, buf_len, PAGE_SIZE) catch unreachable;
         const len = self.done.items.len;
@@ -1091,7 +1091,7 @@ const NewLineIndex = struct {
         }
     }
 
-    fn ensurePage(self: *NewLineIndex, buf: []const u8, page: usize) void {
+    fn ensurePage(self: *NewlineIndex, buf: []const u8, page: usize) void {
         // ensure that the current page has been counted
         debug.dassert(page < self.done.items.len, "page index higher than cache length");
         debug.dassert(page < (buf.len + PAGE_SIZE - 1) / PAGE_SIZE, "page index higher than buffer maximum");
@@ -1112,7 +1112,7 @@ const NewLineIndex = struct {
         }
     }
 
-    fn countRange(self: *NewLineIndex, alloc: std.mem.Allocator, buf: []const u8, span: Span) error{OutOfMemory}!usize {
+    fn countRange(self: *NewlineIndex, alloc: std.mem.Allocator, buf: []const u8, span: Span) error{OutOfMemory}!usize {
         if (span.len == 0) return 0;
         try self.ensureCapacityForLen(alloc, buf.len);
         const page_0 = span.start / PAGE_SIZE;
@@ -1137,7 +1137,7 @@ const NewLineIndex = struct {
         return total;
     }
 
-    fn NthNewlineAfter(self: *NewLineIndex, alloc: std.mem.Allocator, buf: []const u8, start: usize, n: usize) error{OutOfMemory}!usize {
+    fn NthNewlineAfter(self: *NewlineIndex, alloc: std.mem.Allocator, buf: []const u8, start: usize, n: usize) error{OutOfMemory}!usize {
         if (n == 0) return start;
         try self.ensureCapacityForLen(alloc, buf.len);
         // calculate starting and ending indices for current page, offset within the page etc
