@@ -18,7 +18,6 @@ const App = struct {
     vp: Viewport = undefined,
     controller: Controller = undefined,
     renderer: Renderer = undefined,
-    path_in: ?[]const u8 = null,
     // for rebuilding frames only after changes
     dirty: bool = false,
     cached_layout: Layout = undefined,
@@ -26,18 +25,17 @@ const App = struct {
     blink_accum_ns: u64 = 0,
     blink_period_ns: u64 = std.time.ns_per_s,
     last_tick_ns: u64 = 0,
+    // use a platform-agnostic memory map for O(1) file loading
+    path_in: ?[]const u8 = null,
+    mmap: file_io.MappedFile = undefined,
 
     fn init(self: *App) !void {
         const gpa = self.gpa.allocator();
         // initialize geometry
         self.geom = .{ .cell_h_px = 8.0, .cell_w_px = 8.0, .pad_x_cells = 0.5, .pad_y_cells = 0.5 };
         // initialize document
-        if (self.path_in) |p| {
-            const bytes = try file_io.read(gpa, p);
-            self.doc = try Document.init(gpa, bytes);
-        } else {
-            self.doc = try Document.init(gpa, "");
-        }
+        self.mmap = try file_io.MappedFile.initFromPath(self.path_in);
+        self.doc = try Document.init(gpa, self.mmap.bytes);
         // initialize viewport
         self.vp = .{ .top_line = 0, .left_col = 0, .dims = self.getScreenDims() };
         // initialize controller
@@ -57,6 +55,7 @@ const App = struct {
         self.doc.deinit();
         self.arena.deinit();
         _ = self.gpa.deinit();
+        self.mmap.deinit();
     }
 
     fn frame(self: *App) !void {
