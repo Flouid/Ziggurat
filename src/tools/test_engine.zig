@@ -63,6 +63,8 @@ fn replayWithBuffer(comptime Buffer: type, alloc: std.mem.Allocator, init_text: 
     var timer = try std.time.Timer.start();
     var editor = try Buffer.init(alloc, init_text);
     defer editor.deinit();
+    // random operations outside a viewport break lazy scanning invariant, just force scan the entire document instead
+    try editor.ensureScanned(init_text.len);
     const init_ns = timer.read();
     try utils.printf("Completed in {d} ms\n", .{init_ns / 1_000_000});
 

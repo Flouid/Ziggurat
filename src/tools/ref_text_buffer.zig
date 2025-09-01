@@ -191,6 +191,12 @@ pub const TextBuffer = struct {
         }
     }
 
+    pub fn ensureScanned(self: *TextBuffer, line: usize) error{OutOfMemory}!void {
+        // match API with the current faster text buffer, this is a noop here thop
+        _ = self;
+        _ = line;
+    }
+
     fn findPiece(self: *const TextBuffer, idx: usize) usize {
         // given an index into the WORKING DOCUMENT, find the index of the piece that index belongs to.
         // do this via a bog-standard O(log n) binary search
