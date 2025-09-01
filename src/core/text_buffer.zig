@@ -67,19 +67,21 @@ pub const TextBuffer = struct {
         const found = findAt(self.root, at);
         const leaf = found.leaf;
         const pieces = leafPieces(leaf);
+        // NOTE: inserts occur at the caret, which should always be within a scanned portion of the document!
+        // So the insert should always occur WITHIN the scanned prefix of a given leaf.
+        // In order to maintain the invariant, we just need to bump the scanned prefix by the number of inserted bytes
+        const scanned_bytes = scannedPrefixBytes(leaf);
         // under the ideal case, new edits are appended to the end and extend an existing piece
-        if (fastAppendIfPossible(leaf, span, at, self.doc_len)) {
-            bubbleByteDelta(leaf, text.len, false);
-            bubbleLineDelta(leaf, newlines, false);
-            self.doc_len += text.len;
-            return;
+        // if NOT, we splice a new piece into the leaf, attempt merging, and check for overflow
+        if (!fastAppendIfPossible(leaf, span, at, self.doc_len)) {
+            const loc = locateInLeaf(leaf, found.offset);
+            const idx = try spliceIntoLeaf(pieces, self.alloc, loc, span);
+            mergeAround(leaf, idx);
+            try self.bubbleOverflowUp(leaf);
         }
-        const loc = locateInLeaf(leaf, found.offset);
-        const idx = try spliceIntoLeaf(pieces, self.alloc, loc, span);
-        mergeAround(leaf, idx);
         bubbleByteDelta(leaf, text.len, false);
         bubbleLineDelta(leaf, newlines, false);
-        try self.bubbleOverflowUp(leaf);
+        setScannedPrefix(leaf, scanned_bytes + text.len);
         self.doc_len += text.len;
     }
 
@@ -778,7 +780,7 @@ fn freeNode(alloc: std.mem.Allocator, node: *Node) void {
     alloc.destroy(node);
 }
 
-// helper methods, good for debugging and provide readable aliases
+// helper accessors, good for debugging and provide readable aliases
 
 fn leafPieces(leaf: *Node) *std.ArrayList(Piece) {
     debug.dassert(leaf.children == .leaf, "expected leaf node");
@@ -799,6 +801,8 @@ fn childListConst(internal: *const Node) *const std.ArrayList(*Node) {
     debug.dassert(internal.children == .internal, "expected internal node");
     return &internal.children.internal;
 }
+
+// utility helpers for common operations on nodes
 
 fn isLeaf(node: *const Node) bool {
     return node.children == .leaf;
@@ -827,6 +831,28 @@ fn spareNodes(node: *const Node) usize {
 
 fn isExact(node: *const Node) bool {
     return node.known_prefix == nodeCount(node);
+}
+
+fn scannedPrefixBytes(leaf: *const Node) usize {
+    // get the total number of bytes which are inside the leaf's scanned prefix
+    debug.dassert(isLeaf(leaf), "only leaves have a scanned prefix");
+    const pieces = leafPiecesConst(leaf).items;
+    const k: usize = @intCast(leaf.known_prefix);
+    var bytes: usize = 0;
+    var i: usize = 0;
+    while (i < k) : (i += 1) bytes += pieces[i].len();
+    return bytes + leaf.frontier_byte;
+}
+
+fn setScannedPrefix(leaf: *Node, bytes: usize) void {
+    // given a total number of known scanned bytes, set the leaf's prefix accordingly
+    debug.dassert(isLeaf(leaf), "only leaves have a scanned prefix");
+    const pieces = leafPiecesConst(leaf).items;
+    var remaining = bytes;
+    var i: usize = 0;
+    while (i < pieces.len and remaining >= pieces[i].len()) : (i += 1) remaining -= pieces[i].len();
+    leaf.known_prefix = @intCast(i);
+    leaf.frontier_byte = remaining;
 }
 
 // navigation within a document and within a leaf
@@ -960,7 +986,8 @@ fn mergeAround(leaf: *Node, idx: usize) void {
 // helpers for editing nodes
 
 fn fastAppendIfPossible(leaf: *Node, span: Span, at: usize, doc_len: usize) bool {
-    // happy path, appending to the end of the add buffer
+    // happy path, appending to the end of the add buffer.
+    // This performs that happy path if possible and returns true, otherwise does NOTHING and returns false
     if (at != doc_len) return false;
     const pieces = leafPieces(leaf).items;
     if (pieces.len == 0) return false;
