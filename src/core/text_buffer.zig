@@ -95,7 +95,12 @@ pub const TextBuffer = struct {
         const left: *Node = leaf;
         while (remaining > 0) {
             const in_leaf = locateInLeaf(leaf, offset);
+            // NOTE: like with insert, deletes should occur at the caret, which is in the scanned portion of the document
+            // So we can maintain invariants by pushing the scanned prefix back by the number of bytes removed
+            const scanned_bytes = scannedPrefixBytes(leaf);
             const removed = try self.deleteFromLeaf(leaf, in_leaf, remaining);
+            const after_remove = if (removed.bytes >= scanned_bytes) 0 else scanned_bytes - removed.bytes;
+            setScannedPrefix(leaf, after_remove);
             bubbleByteDelta(leaf, removed.bytes, true);
             bubbleLineDelta(leaf, removed.lines, true);
             remaining -= removed.bytes;
