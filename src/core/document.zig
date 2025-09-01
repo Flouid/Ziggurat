@@ -21,7 +21,7 @@ pub const Document = struct {
     buffer: TextBuffer,
     caret: Caret,
     anchor: ?Caret = null,
-    owned_src: []const u8,
+    src: []const u8,
     alloc: std.mem.Allocator,
     max_cols: usize = 0,
 
@@ -33,13 +33,12 @@ pub const Document = struct {
                 .pos = .{ .row = 0, .col = 0 },
                 .preferred_col = 0,
             },
-            .owned_src = original,
+            .src = original,
             .alloc = alloc,
         };
     }
 
     pub fn deinit(self: *Document) void {
-        self.alloc.free(self.owned_src);
         self.buffer.deinit();
     }
 
