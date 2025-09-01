@@ -72,17 +72,18 @@ pub const TextBuffer = struct {
         // In order to maintain the invariant, we just need to bump the scanned prefix by the number of inserted bytes
         const scanned_bytes = scannedPrefixBytes(leaf);
         // under the ideal case, new edits are appended to the end and extend an existing piece
+        const fast_path = fastAppendIfPossible(leaf, span, at, self.doc_len);
         // if NOT, we splice a new piece into the leaf, attempt merging, and check for overflow
-        if (!fastAppendIfPossible(leaf, span, at, self.doc_len)) {
+        if (!fast_path) {
             const loc = locateInLeaf(leaf, found.offset);
             const idx = try spliceIntoLeaf(pieces, self.alloc, loc, span);
             mergeAround(leaf, idx);
-            try self.bubbleOverflowUp(leaf);
         }
         bubbleByteDelta(leaf, text.len, false);
         bubbleLineDelta(leaf, newlines, false);
         setScannedPrefix(leaf, scanned_bytes + text.len);
         self.doc_len += text.len;
+        if (!fast_path) try self.bubbleOverflowUp(leaf);
     }
 
     pub fn delete(self: *TextBuffer, span: Span) error{OutOfMemory}!void {
@@ -271,21 +272,37 @@ pub const TextBuffer = struct {
             .leaf => |*pieces| {
                 if (pieces.items.len <= MAX_PIECES) return null;
                 // split half of the pieces into a new sibling
+                const scanned_bytes = scannedPrefixBytes(node);
+                const old_lines = node.weight_lines;
                 const mid = pieces.items.len / 2;
                 const right = try initLeaf(self.alloc);
-                // calculate exactly how many bytes and lines are moving
+                // calculate exactly how many bytes are moving
                 const to_move = pieces.items[mid..];
-                const moved = try self.countMovedPieces(to_move);
+                var moved_bytes: usize = 0;
+                for (to_move) |*p| moved_bytes += p.len();
                 // move them
                 try leafPieces(right).appendSlice(self.alloc, to_move);
                 pieces.shrinkRetainingCapacity(mid);
                 // manually adjust node weights, faster than a full recompute
-                debug.dassert(node.weight_bytes >= moved.bytes, "leaf split byte size underflow");
-                debug.dassert(node.weight_lines >= moved.lines, "leaf split line size underflow");
-                node.weight_bytes -= moved.bytes;
-                node.weight_lines -= moved.lines;
-                right.weight_bytes = moved.bytes;
-                right.weight_lines = moved.lines;
+                debug.dassert(node.weight_bytes >= moved_bytes, "leaf split byte size underflow");
+                node.weight_bytes -= moved_bytes;
+                right.weight_bytes = moved_bytes;
+                // distribute the scanned bytes across the two leaves
+                const left_scanned = @min(scanned_bytes, node.weight_bytes);
+                const right_scanned = scanned_bytes - left_scanned;
+                // recompute line counts for the scanned prefix on each side
+                node.weight_lines = try self.countLinesInLeafPrefix(node, left_scanned);
+                right.weight_lines = try self.countLinesInLeafPrefix(right, right_scanned);
+                setScannedPrefix(node, left_scanned);
+                setScannedPrefix(right, right_scanned);
+                // local line delta is handled, but we still need to bubble it to the parents
+                const parent = node.parent;
+                if (parent) |p| {
+                    const new_lines = node.weight_lines + right.weight_lines;
+                    if (new_lines >= old_lines) {
+                        bubbleLineDelta(p, new_lines - old_lines, false);
+                    } else bubbleLineDelta(p, old_lines - new_lines, true);
+                }
                 // add the newly split node into the tree
                 return self.spliceNodeInTree(node, right);
             },
@@ -309,6 +326,22 @@ pub const TextBuffer = struct {
                 return self.spliceNodeInTree(node, right);
             },
         }
+    }
+
+    fn countLinesInLeafPrefix(self: *TextBuffer, leaf: *const Node, bytes: usize) error{OutOfMemory}!usize {
+        // when splitting nodes, we can determine easily how long the scanned prefix is in bytes, but newlines are harder.
+        // This recomputes them, but since the precondition is that these pieces have been scanned (indexed), it should be cheap
+        debug.dassert(isLeaf(leaf), "countLinesInLeafPrefix must be called on a leaf");
+        const pieces = leafPiecesConst(leaf).items;
+        var remaining = bytes;
+        var lines: usize = 0;
+        var i: usize = 0;
+        while (i < pieces.len and remaining > 0) : (i += 1) {
+            const take = @min(remaining, pieces[i].len());
+            lines += try self.countLinesInPieceRange(&pieces[i], 0, take);
+            remaining -= take;
+        }
+        return lines;
     }
 
     fn spliceNodeInTree(self: *TextBuffer, old: *Node, new: *Node) error{OutOfMemory}!?*Node {
@@ -400,7 +433,9 @@ pub const TextBuffer = struct {
         return removed;
     }
 
-    fn transferRangeBetweenSiblings(self: *TextBuffer, src: *Node, dst: *Node, start: usize, count: usize, side: enum { front, back }) error{OutOfMemory}!void {
+    const Side = enum { front, back };
+
+    fn transferRangeBetweenSiblings(self: *TextBuffer, src: *Node, dst: *Node, start: usize, count: usize, side: Side) error{OutOfMemory}!void {
         debug.dassert(count > 0, "cannot transfer 0 nodes between siblings");
         debug.dassert(std.meta.activeTag(src.children) == std.meta.activeTag(dst.children), "source and destination must be the same type of node");
         debug.dassert(start == 0 or start + count == nodeCount(src), "insertions must be contiguous with start or end of source");
@@ -412,7 +447,14 @@ pub const TextBuffer = struct {
                 debug.dassert(dst_pieces.items.len > 0, "destination must not start empty");
                 // calculate exactly how many bytes and lines are moving
                 const to_move = src_pieces.items[start .. start + count];
-                const moved = try self.countMovedPieces(to_move);
+                var moved_bytes: usize = 0;
+                for (to_move) |*p| moved_bytes += p.len();
+                const scanned_src = scannedPrefixBytes(src);
+                const scanned_dst = scannedPrefixBytes(dst);
+                const bytes_before_range = if (start == 0) 0 else src.weight_bytes - moved_bytes;
+                var scanned_overlap: usize = 0;
+                if (scanned_src > bytes_before_range) scanned_overlap = @min(moved_bytes, scanned_src - bytes_before_range);
+                const line_overlap = try self.countLinesInPieces(to_move, scanned_overlap, if (start == 0) .front else .back);
                 switch (side) {
                     .front => try dst_pieces.insertSlice(self.alloc, 0, to_move),
                     .back => try dst_pieces.appendSlice(self.alloc, to_move),
@@ -424,10 +466,20 @@ pub const TextBuffer = struct {
                     .back => dst_pieces.items.len - count,
                 };
                 mergeAround(dst, center);
-                bubbleByteDelta(src, moved.bytes, true);
-                bubbleByteDelta(dst, moved.bytes, false);
-                bubbleLineDelta(src, moved.lines, true);
-                bubbleLineDelta(dst, moved.lines, false);
+                bubbleByteDelta(src, moved_bytes, true);
+                bubbleByteDelta(dst, moved_bytes, false);
+                // source loses scanned bytes/lines from the left
+                if (scanned_overlap > 0) {
+                    bubbleLineDelta(src, line_overlap, true);
+                    const new_scanned = if (scanned_overlap >= scanned_src) 0 else scanned_src - scanned_overlap;
+                    setScannedPrefix(src, new_scanned);
+                }
+                // destination gains scanned bytes/lines only on at the front
+                if (side == .front and scanned_overlap > 0) {
+                    bubbleLineDelta(dst, line_overlap, false);
+                    const new_scanned = scanned_dst + scanned_overlap;
+                    setScannedPrefix(dst, new_scanned);
+                }
             },
             .internal => {
                 const src_children = childList(src);
@@ -454,6 +506,31 @@ pub const TextBuffer = struct {
                 bubbleLineDelta(dst, moved.lines, false);
             },
         }
+    }
+
+    fn countLinesInPieces(self: *TextBuffer, pieces: []Piece, bytes: usize, side: Side) error{OutOfMemory}!usize {
+        if (bytes == 0 or pieces.len == 0) return 0;
+        var remaining = bytes;
+        var lines: usize = 0;
+        switch (side) {
+            .front => {
+                var i: usize = 0;
+                while (i < pieces.len and remaining > 0) : (i += 1) {
+                    const take = @min(remaining, pieces[i].len());
+                    lines += try self.countLinesInPieceRange(&pieces[i], 0, take);
+                    remaining -= take;
+                }
+            },
+            .back => {
+                var i = pieces.len - 1;
+                while (i >= 0 and remaining > 0) : (i -= 1) {
+                    const take = @min(remaining, pieces[i].len());
+                    lines += try self.countLinesInPieceRange(&pieces[i], pieces[i].len() - take, take);
+                    remaining -= take;
+                }
+            },
+        }
+        return lines;
     }
 
     fn tryBorrow(self: *TextBuffer, node: *Node, siblings: Siblings) error{OutOfMemory}!usize {
@@ -572,16 +649,6 @@ pub const TextBuffer = struct {
     }
 
     const MoveResult = struct { bytes: usize, lines: usize };
-
-    fn countMovedPieces(self: *TextBuffer, to_move: []Piece) error{OutOfMemory}!MoveResult {
-        var moved_bytes: usize = 0;
-        var moved_lines: usize = 0;
-        for (to_move) |*piece| {
-            moved_bytes += piece.len();
-            moved_lines += try self.countLinesInPiece(piece);
-        }
-        return .{ .bytes = moved_bytes, .lines = moved_lines };
-    }
 
     fn countMovedNodes(to_move: []*Node) MoveResult {
         var moved_bytes: usize = 0;
