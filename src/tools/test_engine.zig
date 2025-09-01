@@ -7,7 +7,7 @@ const Span = @import("types").Span;
 
 // -------------------- TEST FIXTURE IMPLEMENTATION --------------------
 
-const OPType = enum { I, D };
+const OPType = enum { insert, delete };
 
 const TextOp = struct {
     // wraps an insert or a delete as a struct
@@ -16,17 +16,17 @@ const TextOp = struct {
     op: OPType,
 
     fn initInsert(span: Span, text: []const u8) TextOp {
-        return TextOp{ .span = span, .text = text, .op = .I };
+        return TextOp{ .span = span, .text = text, .op = .insert };
     }
 
     fn initDelete(span: Span) TextOp {
-        return TextOp{ .span = span, .text = undefined, .op = .D };
+        return TextOp{ .span = span, .text = undefined, .op = .delete };
     }
 
     pub fn format(self: TextOp, writer: anytype) !void {
         switch (self.op) {
-            .I => try writer.print("I {d} {d} : {s}", .{ self.span.start, self.span.len, self.text }),
-            .D => try writer.print("D {d} {d}", .{ self.span.start, self.span.len }),
+            .insert => try writer.print("I {d} {d} : {s}", .{ self.span.start, self.span.len, self.text }),
+            .delete => try writer.print("D {d} {d}", .{ self.span.start, self.span.len }),
         }
     }
 };
@@ -70,8 +70,8 @@ fn replayWithBuffer(comptime Buffer: type, alloc: std.mem.Allocator, init_text: 
     for (ops, 0..) |op, i| {
         if (i % 1000 == 0) try utils.printf("Performing Ops: {d: >7} / {d: >7}\r", .{ i, ops.len });
         switch (op.op) {
-            .I => try editor.insert(op.span.start, op.text),
-            .D => try editor.delete(op.span),
+            .insert => try editor.insert(op.span.start, op.text),
+            .delete => try editor.delete(op.span),
         }
     }
     const run_ns = timer.read();
@@ -115,8 +115,8 @@ fn getSpan(rng: *utils.RNG, is_long: bool, doc_len: usize) Span {
 fn getSafeSpan(rng: *utils.RNG, op_type: OPType, is_long: bool, doc_len: usize) Span {
     // helper to generate a safe span to perform any operation at
     switch (op_type) {
-        .I => return getSpan(rng, is_long, doc_len),
-        .D => {
+        .insert => return getSpan(rng, is_long, doc_len),
+        .delete => {
             debug.dassert(doc_len != 0, "cannot delete from empty document");
             // choose [at, at+len) fully inside [0, doc_len)
             while (true) {
@@ -142,7 +142,7 @@ fn generateOps(a: std.mem.Allocator, rng: *utils.RNG, cfg: GenConfig, init_doc_l
     debug.dassert(cfg.p_long <= 100, "p_long must be an integer from 100");
     var out: std.ArrayList(TextOp) = .empty;
     errdefer {
-        for (out.items) |op| if (op.op == .I) a.free(op.text);
+        for (out.items) |op| if (op.op == .insert) a.free(op.text);
         out.deinit(a);
     }
     var exp_doc_len = init_doc_len;
@@ -152,17 +152,17 @@ fn generateOps(a: std.mem.Allocator, rng: *utils.RNG, cfg: GenConfig, init_doc_l
 
         var op_type: OPType = undefined;
         if (exp_doc_len == 0 or rng.randInt(u8, 0, 100) < cfg.p_insert) {
-            op_type = .I;
-        } else op_type = .D;
+            op_type = .insert;
+        } else op_type = .delete;
         const is_long = rng.randInt(u8, 0, 100) < cfg.p_long;
         const loc = getSafeSpan(rng, op_type, is_long, exp_doc_len);
         switch (op_type) {
-            .I => {
+            .insert => {
                 const text = try generateText(a, rng, loc);
                 try out.append(a, TextOp.initInsert(loc, text));
                 exp_doc_len += loc.len;
             },
-            .D => {
+            .delete => {
                 try out.append(a, TextOp.initDelete(loc));
                 exp_doc_len -= loc.len;
             },

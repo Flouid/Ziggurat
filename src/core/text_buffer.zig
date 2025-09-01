@@ -38,7 +38,7 @@ pub const TextBuffer = struct {
         const leaf = try initLeaf(alloc);
         const span: Span = .{ .start = 0, .len = original.len };
         if (span.len > 0) {
-            try leafPieces(leaf).append(alloc, Piece.init(.Original, span));
+            try leafPieces(leaf).append(alloc, Piece.init(.original, span));
             leaf.weight_bytes = span.len;
         }
         return TextBuffer{
@@ -211,8 +211,8 @@ pub const TextBuffer = struct {
         const loc = locateInLeaf(found.leaf, found.offset);
         const piece = leafPiecesConst(found.leaf).items[loc.piece_idx];
         const src = switch (piece.buf()) {
-            .Original => self.original,
-            .Add => self.add.items,
+            .original => self.original,
+            .add => self.add.items,
         };
         const pos = piece.off + loc.offset;
         debug.dassert(pos < src.len, "piece offset outside of source buffer");
@@ -393,7 +393,7 @@ pub const TextBuffer = struct {
         return removed;
     }
 
-    fn transferRangeBetweenSiblings(self: *TextBuffer, src: *Node, dst: *Node, start: usize, count: usize, side: enum { Front, Back }) error{OutOfMemory}!void {
+    fn transferRangeBetweenSiblings(self: *TextBuffer, src: *Node, dst: *Node, start: usize, count: usize, side: enum { front, back }) error{OutOfMemory}!void {
         debug.dassert(count > 0, "cannot transfer 0 nodes between siblings");
         debug.dassert(std.meta.activeTag(src.children) == std.meta.activeTag(dst.children), "source and destination must be the same type of node");
         debug.dassert(start == 0 or start + count == nodeCount(src), "insertions must be contiguous with start or end of source");
@@ -407,14 +407,14 @@ pub const TextBuffer = struct {
                 const to_move = src_pieces.items[start .. start + count];
                 const moved = try self.countMovedPieces(to_move);
                 switch (side) {
-                    .Front => try dst_pieces.insertSlice(self.alloc, 0, to_move),
-                    .Back => try dst_pieces.appendSlice(self.alloc, to_move),
+                    .front => try dst_pieces.insertSlice(self.alloc, 0, to_move),
+                    .back => try dst_pieces.appendSlice(self.alloc, to_move),
                 }
                 _ = utils.orderedRemoveRange(Piece, src_pieces, start, count);
                 // check for new merge opportunities
                 const center: usize = switch (side) {
-                    .Front => count,
-                    .Back => dst_pieces.items.len - count,
+                    .front => count,
+                    .back => dst_pieces.items.len - count,
                 };
                 mergeAround(dst, center);
                 bubbleByteDelta(src, moved.bytes, true);
@@ -431,14 +431,14 @@ pub const TextBuffer = struct {
                 const to_move = src_children.items[start .. start + count];
                 const moved = countMovedNodes(to_move);
                 switch (side) {
-                    .Front => try dst_children.insertSlice(self.alloc, 0, to_move),
-                    .Back => try dst_children.appendSlice(self.alloc, to_move),
+                    .front => try dst_children.insertSlice(self.alloc, 0, to_move),
+                    .back => try dst_children.appendSlice(self.alloc, to_move),
                 }
                 _ = utils.orderedRemoveRange(*Node, src_children, start, count);
                 // fix parent pointers for moved children
                 const adopted = switch (side) {
-                    .Front => dst_children.items[0..count],
-                    .Back => dst_children.items[dst_children.items.len - count ..],
+                    .front => dst_children.items[0..count],
+                    .back => dst_children.items[dst_children.items.len - count ..],
                 };
                 for (adopted) |child| child.parent = dst;
                 bubbleByteDelta(src, moved.bytes, true);
@@ -454,12 +454,12 @@ pub const TextBuffer = struct {
         const plan = planBorrow(node, siblings);
         if (siblings.l) |left| {
             if (plan.take_left > 0) {
-                try self.transferRangeBetweenSiblings(left, node, nodeCount(left) - plan.take_left, plan.take_left, .Front);
+                try self.transferRangeBetweenSiblings(left, node, nodeCount(left) - plan.take_left, plan.take_left, .front);
             }
         }
         if (siblings.r) |right| {
             if (plan.take_right > 0) {
-                try self.transferRangeBetweenSiblings(right, node, 0, plan.take_right, .Back);
+                try self.transferRangeBetweenSiblings(right, node, 0, plan.take_right, .back);
             }
         }
         return plan.take_left + plan.take_right;
@@ -537,7 +537,7 @@ pub const TextBuffer = struct {
 
     fn mergeWithSibling(self: *TextBuffer, src: *Node, dst: *Node) error{OutOfMemory}!?*Node {
         if (nodeCount(src) + nodeCount(dst) > nodeMax(dst)) return null;
-        try self.transferRangeBetweenSiblings(src, dst, 0, nodeCount(src), .Back);
+        try self.transferRangeBetweenSiblings(src, dst, 0, nodeCount(src), .back);
         const parent = src.parent.?;
         self.infanticide(parent, src);
         return parent;
@@ -549,8 +549,8 @@ pub const TextBuffer = struct {
         // count all newlines in a piece
         const span: Span = .{ .start = p.off, .len = p.len() };
         switch (p.buf()) {
-            .Original => return self.o_idx.countRange(self.alloc, self.original, span),
-            .Add => return self.a_idx.countRange(self.alloc, self.add.items, span),
+            .original => return self.o_idx.countRange(self.alloc, self.original, span),
+            .add => return self.a_idx.countRange(self.alloc, self.add.items, span),
         }
     }
 
@@ -559,8 +559,8 @@ pub const TextBuffer = struct {
         const span: Span = .{ .start = p.off + offset, .len = len };
         debug.dassert(span.end() <= p.off + p.len(), "cannot count lines past the end of the piece");
         switch (p.buf()) {
-            .Original => return self.o_idx.countRange(self.alloc, self.original, span),
-            .Add => return self.a_idx.countRange(self.alloc, self.add.items, span),
+            .original => return self.o_idx.countRange(self.alloc, self.original, span),
+            .add => return self.a_idx.countRange(self.alloc, self.add.items, span),
         }
     }
 
@@ -589,8 +589,8 @@ pub const TextBuffer = struct {
     fn findNthNewlineInPiece(self: *TextBuffer, p: *const Piece, n: usize) error{OutOfMemory}!usize {
         // return byte offset within a piece of the n-th newline
         const idx = switch (p.buf()) {
-            .Original => try self.o_idx.NthNewlineAfter(self.alloc, self.original, p.off, n),
-            .Add => try self.a_idx.NthNewlineAfter(self.alloc, self.add.items, p.off, n),
+            .original => try self.o_idx.NthNewlineAfter(self.alloc, self.original, p.off, n),
+            .add => try self.a_idx.NthNewlineAfter(self.alloc, self.add.items, p.off, n),
         };
         return idx - p.off;
     }
@@ -609,7 +609,7 @@ pub const TextBuffer = struct {
                     var start = p.off + node.frontier_byte;
                     const end = p.off + p.len();
                     switch (p.buf()) {
-                        .Original => {
+                        .original => {
                             // pieces from the original document may be enormous, multiple GB.
                             // We don't want to just count the entire piece in one batch, rather advance page-by-page
                             // until we've seen enough newlines to satisfy the query
@@ -626,7 +626,7 @@ pub const TextBuffer = struct {
                                 }
                             }
                         },
-                        .Add => {
+                        .add => {
                             // pieces from the add buffer can generally be assumed to be small enough to count in a single batch
                             const span: Span = .{ .start = start, .len = p.len() - node.frontier_byte };
                             node.weight_lines += try self.a_idx.countRange(self.alloc, self.add.items, span);
@@ -654,7 +654,7 @@ pub const TextBuffer = struct {
 
 // -------------------- PIECE DATA TYPE --------------------
 
-const Buffer = enum { Original, Add };
+const Buffer = enum { original, add };
 
 const Piece = struct {
     // one entry in the piece table.
@@ -682,11 +682,11 @@ const Piece = struct {
     }
 
     fn buf(self: Piece) Buffer {
-        return if ((self.len_and_buf & hi_bit) == 0) .Original else .Add;
+        return if ((self.len_and_buf & hi_bit) == 0) .original else .add;
     }
 
     fn compose(length: usize, buffer: Buffer) usize {
-        const flag: usize = if (buffer == .Add) hi_bit else 0;
+        const flag: usize = if (buffer == .add) hi_bit else 0;
         return (length & len_mask) | flag;
     }
 
@@ -709,7 +709,7 @@ const Piece = struct {
 
     fn init(buffer: Buffer, span: Span) Piece {
         debug.dassert((span.len & hi_bit) == 0, "file size must be at most half of your system's virtual address space");
-        const flag: usize = if (buffer == .Add) hi_bit else 0;
+        const flag: usize = if (buffer == .add) hi_bit else 0;
         return .{ .off = span.start, .len_and_buf = span.len | flag };
     }
 };
@@ -966,7 +966,7 @@ fn fastAppendIfPossible(leaf: *Node, span: Span, at: usize, doc_len: usize) bool
     if (pieces.len == 0) return false;
     const last = &pieces[pieces.len - 1];
     // only valid if the last piece is from the add buffer and contiguous with new entry
-    if (last.buf() == .Add and last.off + last.len() == span.start) {
+    if (last.buf() == .add and last.off + last.len() == span.start) {
         last.growBy(span.len);
         return true;
     }
@@ -976,7 +976,7 @@ fn fastAppendIfPossible(leaf: *Node, span: Span, at: usize, doc_len: usize) bool
 fn spliceIntoLeaf(pieces: *std.ArrayList(Piece), alloc: std.mem.Allocator, loc: InLeaf, span: Span) error{OutOfMemory}!usize {
     // generic path, build 1-3 replacement pieces and insert them into the piece table.
     // The return is the index of the newly inserted piece
-    const new_piece = Piece.init(.Add, span);
+    const new_piece = Piece.init(.add, span);
     const len = pieces.items.len;
     if (loc.piece_idx < len) {
         const old = pieces.items[loc.piece_idx];
@@ -1208,8 +1208,8 @@ pub const SliceIter = struct {
         // identify which buffer to slice from
         const piece = pieces[self.piece_idx];
         const src = switch (piece.buf()) {
-            .Original => self.buffer.original,
-            .Add => self.buffer.add.items,
+            .original => self.buffer.original,
+            .add => self.buffer.add.items,
         };
         // create the actual current slice
         const bytes_available = piece.len() - self.piece_offset;

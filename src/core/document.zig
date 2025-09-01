@@ -352,12 +352,12 @@ pub const Document = struct {
     }
 };
 
-const WordClass = enum { space, char, punct };
+const WordClass = enum { space, ident, punct };
 
 fn classify(byte: u8) WordClass {
     const is_char = (byte >= 'A' and byte <= 'Z') or (byte >= 'a' and byte <= 'z');
     const is_digit = (byte >= '0' and byte <= '9');
-    if (is_char or is_digit or byte == '_') return .char;
+    if (is_char or is_digit or byte == '_') return .ident;
     if (byte == ' ' or byte == '\t' or byte == '\n' or byte == '\r') return .space;
     return .punct;
 }
