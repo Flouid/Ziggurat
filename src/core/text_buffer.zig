@@ -83,11 +83,10 @@ pub const TextBuffer = struct {
         bubbleLineDelta(leaf, newlines, false);
         self.doc_len += text.len;
         if (!fast_path) try self.bubbleOverflowUp(leaf);
-        // given that contract that inserts should always occur inside the scanned region, this should ALWAYS be true
+        // given that the contract is inserts should always occur inside the scanned region, this should ALWAYS be true
         debug.dassert(at <= self.scanned_bytes, "insert outside of scanned region of buffer");
         self.scanned_bytes += text.len;
-        if (self.scanned_bytes >= self.doc_len) return;
-        self.retargetFrontier();
+        if (self.scanned_bytes < self.doc_len) self.retargetFrontier();
     }
 
     pub fn delete(self: *TextBuffer, span: Span) error{OutOfMemory}!void {
@@ -114,13 +113,12 @@ pub const TextBuffer = struct {
         // handle underflow when deleting reduces the number of pieces too much
         try self.repairAfterDelete(left, leaf);
         self.doc_len -= span.len;
-        // it's very possible deleting creates extra pieces, so handle overflow too
+        // it's possible deleting creates extra pieces, so handle overflow too
         try self.bubbleOverflowUp(leaf);
-        // given that contract that deletes should always occur inside the scanned region, this should ALWAYS be true
+        // given that the contract is deletes should always occur inside the scanned region, this should ALWAYS be true
         debug.dassert(span.end() <= self.scanned_bytes, "delete outside of scanned region of buffer");
         self.scanned_bytes -= span.len;
-        if (self.scanned_bytes >= self.doc_len) return;
-        self.retargetFrontier();
+        if (self.scanned_bytes < self.doc_len) self.retargetFrontier();
     }
 
     pub fn scanFrontierUntil(self: *TextBuffer, line: usize) error{OutOfMemory}!bool {
@@ -136,30 +134,18 @@ pub const TextBuffer = struct {
                 continue;
             }
             const piece = pieces[self.frontier.piece_idx];
+            debug.dassert(piece.buf() == .original, "the frontier should never fall within an add buffer piece\n");
             const start = piece.off + self.frontier.offset;
             const end = piece.off + piece.len();
-            if (piece.buf() == .original) {
-                const page = start / PAGE_SIZE;
-                const page_end = @min((page + 1) * PAGE_SIZE, end);
-                const bytes = page_end - start;
-                const span: Span = .{ .start = start, .len = bytes };
-                const newlines = try self.o_idx.countRange(self.alloc, self.original, span);
-                self.frontier.offset += bytes;
-                self.scanned_bytes += bytes;
-                bubbleLineDelta(leaf, newlines, false);
-                if (self.frontier.offset == piece.len()) {
-                    self.frontier.piece_idx += 1;
-                    self.frontier.offset = 0;
-                }
-            } else {
-                std.debug.print("the frontier should never fall within an add buffer piece!\n", .{});
-                const bytes = end - start;
-                const span: Span = .{ .start = start, .len = bytes };
-                const newlines = try self.a_idx.countRange(self.alloc, self.add.items, span);
+            const page_end = @min(((start / PAGE_SIZE) + 1) * PAGE_SIZE, end);
+            const span: Span = .{ .start = start, .len = page_end - start };
+            const newlines = try self.o_idx.countRange(self.alloc, self.original, span);
+            self.frontier.offset += span.len;
+            self.scanned_bytes += span.len;
+            bubbleLineDelta(leaf, newlines, false);
+            if (self.frontier.offset == piece.len()) {
                 self.frontier.piece_idx += 1;
                 self.frontier.offset = 0;
-                self.scanned_bytes += bytes;
-                bubbleLineDelta(leaf, newlines, false);
             }
         }
         return true;
@@ -219,7 +205,7 @@ pub const TextBuffer = struct {
             switch (node.children) {
                 .leaf => {
                     const pieces = leafPiecesConst(node).items;
-                    // we must avoid scanning the full frontier piece, count 
+                    // we must avoid scanning the full frontier piece, keep track of where the frontier is
                     const scanned_in_leaf = if (node == self.frontier.leaf) self.frontier.scannedBytesInLeaf() else node.weight_bytes;
                     var acc: usize = 0;
                     var i: usize = 0;
@@ -502,31 +488,6 @@ pub const TextBuffer = struct {
                 bubbleLineDelta(dst, moved.lines, false);
             },
         }
-    }
-
-    fn countLinesInPieces(self: *TextBuffer, pieces: []Piece, bytes: usize, side: Side) error{OutOfMemory}!usize {
-        if (bytes == 0 or pieces.len == 0) return 0;
-        var remaining = bytes;
-        var lines: usize = 0;
-        switch (side) {
-            .front => {
-                var i: usize = 0;
-                while (i < pieces.len and remaining > 0) : (i += 1) {
-                    const take = @min(remaining, pieces[i].len());
-                    lines += try self.countLinesInPieceRange(&pieces[i], 0, take);
-                    remaining -= take;
-                }
-            },
-            .back => {
-                var i = pieces.len - 1;
-                while (i >= 0 and remaining > 0) : (i -= 1) {
-                    const take = @min(remaining, pieces[i].len());
-                    lines += try self.countLinesInPieceRange(&pieces[i], pieces[i].len() - take, take);
-                    remaining -= take;
-                }
-            },
-        }
-        return lines;
     }
 
     fn tryBorrow(self: *TextBuffer, node: *Node, siblings: Siblings) error{OutOfMemory}!usize {

@@ -313,6 +313,8 @@ pub const Document = struct {
         return if (line + 1 < self.lineCount()) self.buffer.byteOfLine(line + 1) else self.size();
     }
 
+    // NOTE: both of these functions carry an implicit assumption that bytes == columns
+
     fn byteToPos(self: *Document, at: usize) error{OutOfMemory}!TextPos {
         debug.dassert(at <= self.size(), "index outside of document");
         // NOTE: this double traversal is technically unneccesary, but would require another big helper
@@ -325,7 +327,6 @@ pub const Document = struct {
         const span = try self.lineSpan(pos.row);
         debug.dassert(pos.col <= span.len, "column outside of line");
         const start = try self.buffer.byteOfLine(pos.row);
-        // NOTE: implicit assumption that bytes and columns are interchangable
         return start + pos.col;
     }
 
