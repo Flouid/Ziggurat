@@ -15,6 +15,8 @@ pub const Caret = struct {
     byte: usize,
     pos: TextPos,
     preferred_col: usize,
+
+    const begin: Caret = .{ .byte = 0, .pos = .{ .row = 0, .col = 0 }, .preferred_col = 0 };
 };
 
 pub const Document = struct {
@@ -28,11 +30,7 @@ pub const Document = struct {
     pub fn init(alloc: std.mem.Allocator, original: []const u8) error{ OutOfMemory, FileTooBig }!Document {
         return .{
             .buffer = try TextBuffer.init(alloc, original),
-            .caret = .{
-                .byte = 0,
-                .pos = .{ .row = 0, .col = 0 },
-                .preferred_col = 0,
-            },
+            .caret = .begin,
             .src = original,
             .alloc = alloc,
         };
@@ -85,10 +83,18 @@ pub const Document = struct {
         // default case, delete from the caret and one at a time
         var c = self.caret;
         var take: usize = 1;
+        // handle selections
         if (self.selectionSpan()) |span| {
             // if caret is behind span start, delete from the start instead
             if (self.anchor.?.byte > c.byte) c = self.anchor.?;
             take = span.len;
+        }
+        // special case, delete entire document
+        if (take == self.size()) {
+            try self.buffer.reset();
+            self.caret = .begin;
+            self.resetSelection();
+            return;
         }
         // if the cursor is at the start of the document, silently do nothing
         if (c.byte == 0) return;
@@ -260,6 +266,11 @@ pub const Document = struct {
 
     pub fn selectLine(self: *Document) error{OutOfMemory}!void {
         const span = try self.lineSpan(self.caret.pos.row);
+        // if the line is empty, skip straight to document select
+        if (self.buffer.peek(span.start) == '\n') {
+            try self.selectDocument();
+            return;
+        }
         // move caret to line start, copy it as the anchor
         self.caret.byte = span.start;
         self.caret.pos = try self.byteToPos(span.start);
@@ -297,8 +308,8 @@ pub const Document = struct {
         const start = try self.lineStart(line);
         const end = try self.lineEnd(line);
         debug.dassert(end >= start, "line cannot have negative length");
-        // subtracts newline for all lines except the last (no newline)
-        const len = if (line + 1 < self.lineCount()) end - start - 1 else end - start;
+        // subtracts newline for all lines except the last (no newline) and empty lines (0 length)
+        const len = if (start < end and line + 1 < self.lineCount()) end - start - 1 else end - start;
         if (len > self.max_cols) self.max_cols = len;
         return .{ .start = start, .len = len };
     }
@@ -336,6 +347,7 @@ pub const Document = struct {
         if (i == 0) return 0;
         i -= 1;
         const class = classify(self.buffer.peek(i));
+        if (class == .newline) return i + 1;
         while (i > 0 and classify(self.buffer.peek(i - 1)) == class) : (i -= 1) {}
         return i;
     }
@@ -346,17 +358,19 @@ pub const Document = struct {
         while (i < n and classify(self.buffer.peek(i)) == .space) : (i += 1) {}
         if (i == n) return i;
         const class = classify(self.buffer.peek(i));
+        if (class == .newline) return i + 1;
         while (i < n and classify(self.buffer.peek(i)) == class) : (i += 1) {}
         return i;
     }
 };
 
-const WordClass = enum { space, ident, punct };
+const WordClass = enum { space, ident, punct, newline };
 
 fn classify(byte: u8) WordClass {
     const is_char = (byte >= 'A' and byte <= 'Z') or (byte >= 'a' and byte <= 'z');
     const is_digit = (byte >= '0' and byte <= '9');
     if (is_char or is_digit or byte == '_') return .ident;
-    if (byte == ' ' or byte == '\t' or byte == '\n' or byte == '\r') return .space;
+    if (byte == '\r' or byte == '\n') return .newline;
+    if (byte == ' ' or byte == '\t') return .space;
     return .punct;
 }
