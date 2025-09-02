@@ -260,6 +260,11 @@ pub const Document = struct {
 
     pub fn selectLine(self: *Document) error{OutOfMemory}!void {
         const span = try self.lineSpan(self.caret.pos.row);
+        // if the line is empty, skip straight to document select
+        if (self.buffer.peek(span.start) == '\n') {
+            try self.selectDocument();
+            return;
+        }
         // move caret to line start, copy it as the anchor
         self.caret.byte = span.start;
         self.caret.pos = try self.byteToPos(span.start);
