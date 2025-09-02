@@ -219,11 +219,13 @@ pub const TextBuffer = struct {
             switch (node.children) {
                 .leaf => {
                     const pieces = leafPiecesConst(node).items;
+                    // we must avoid scanning the full frontier piece, count 
+                    const scanned_in_leaf = if (node == self.frontier.leaf) self.frontier.scannedBytesInLeaf() else node.weight_bytes;
                     var acc: usize = 0;
                     var i: usize = 0;
-                    while (i < pieces.len) : (i += 1) {
+                    // consume only fully scanned pieces first
+                    while (i < pieces.len and acc + pieces[i].len() <= scanned_in_leaf) : (i += 1) {
                         const piece = &pieces[i];
-                        // given this is within the known prefix, this is cached and cheap
                         const lines_in_piece = try self.countLinesInPiece(piece);
                         if (remaining <= lines_in_piece) break;
                         remaining -= lines_in_piece;
@@ -757,54 +759,12 @@ const Frontier = struct {
     piece_idx: usize,
     offset: usize,
 
-    const Ordering = enum { left, same, right };
-
-    fn get_depth(leaf: *const Node) u8 {
-        var cur: ?*Node = leaf;
-        var depth: u8 = 0;
-        while (cur) |node| {
-            depth += 1;
-            cur = node.parent;
-        }
-        return depth;
-    }
-
-    fn compareLeafToFrontier(self: *const Frontier, leaf: *const Node) Ordering {
-        debug.dassert(isLeaf(leaf), "comparing leaf to frontier requires node to be a leaf");
-        // determine if a given leaf is to the left, right, or the same as the frontier
-        const a: *const Node = leaf;
-        const b: *const Node = self.leaf;
-        if (a == b) return .same;
-        var depth_a = get_depth(a);
-        var depth_b: u8 = get_depth(b);
-        // align depths, then ascend together to lowest common ancestor
-        while (depth_a > depth_b) : (depth_a -= 1) a = a.parent.?;
-        while (depth_b > depth_a) : (depth_b -= 1) b = b.parent.?;
-        while (a.parent != b.parent) {
-            a = a.parent.?;
-            b = b.parent.?;
-        }
-        // they share a parent, use sibling indices to compare
-        const parent = a.parent.?;
-        const siblings = childListConst(parent).items;
-        const a_idx = indexOfChild(siblings, a);
-        const b_idx = indexOfChild(siblings, b);
-        return if (a_idx < b_idx) .left else .right;
-    }
-
-    fn scannedBytesInLeaf(self: *const Frontier, leaf: *const Node) usize {
-        debug.dassert(isLeaf(leaf), "scanning bytes in leaf requires node to be a leaf");
-        switch (self.compareLeafToFrontier(leaf)) {
-            .left => return leaf.weight_bytes,
-            .right => return 0,
-            .same => {
-                const pieces = leafPiecesConst(leaf).items;
-                var sum: usize = 0;
-                var i: usize = 0;
-                while (i < self.piece_idx) : (i += 1) sum += pieces[i].len();
-                return sum + self.offset;
-            },
-        }
+    fn scannedBytesInLeaf(self: *const Frontier) usize {
+        const pieces = leafPiecesConst(self.leaf).items;
+        var acc: usize = 0;
+        var i: usize = 0;
+        while (i < self.piece_idx) : (i += 1) acc += pieces[i].len();
+        return acc + self.offset;
     }
 };
 
