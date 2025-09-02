@@ -7,7 +7,7 @@ const Span = @import("types").Span;
 // It's now kept as a correctness reference.
 // This is easy to verify, so it is used to create ground truth test artifacts.
 
-const BufferType = enum { Original, Add };
+const BufferType = enum { original, add };
 
 const Piece = struct {
     // one entry in the piece table.
@@ -40,7 +40,7 @@ pub const TextBuffer = struct {
     pub fn init(alloc: std.mem.Allocator, original: []const u8) error{OutOfMemory}!TextBuffer {
         var table = TextBuffer{ .original = original, .doc_len = original.len, .alloc = alloc };
         if (original.len == 0) return table; // empty document, no pieces
-        try table.pieces.append(alloc, .{ .buf = .Original, .off = 0, .len = original.len });
+        try table.pieces.append(alloc, .{ .buf = .original, .off = 0, .len = original.len });
         try table.prefix.append(alloc, 0);
         return table;
     }
@@ -59,7 +59,7 @@ pub const TextBuffer = struct {
         try self.add.appendSlice(self.alloc, text);
         // case for empty doc
         if (self.pieces.items.len == 0) {
-            try self.pieces.append(self.alloc, .{ .buf = .Add, .off = 0, .len = text.len });
+            try self.pieces.append(self.alloc, .{ .buf = .add, .off = 0, .len = text.len });
             try self.prefix.append(self.alloc, 0);
             self.doc_len += text.len;
             return;
@@ -70,7 +70,7 @@ pub const TextBuffer = struct {
             // imagine you append "abc" to the doc, then "x" to the start.
             // the add buffer now contains "abcx", but the last piece will be "abc"
             // the "x" in that example means you can't assume the bytes are contiguous unless you check
-            if (last_piece.buf == .Add and last_piece.off + last_piece.len == add_offset) {
+            if (last_piece.buf == .add and last_piece.off + last_piece.len == add_offset) {
                 last_piece.len += text.len;
                 self.doc_len += text.len;
                 return;
@@ -94,7 +94,7 @@ pub const TextBuffer = struct {
             buf[n] = prefix;
             n += 1;
         }
-        buf[n] = .{ .buf = .Add, .off = add_offset, .len = text.len };
+        buf[n] = .{ .buf = .add, .off = add_offset, .len = text.len };
         n += 1;
         if (posfix.len != 0) {
             buf[n] = posfix;
@@ -182,13 +182,19 @@ pub const TextBuffer = struct {
         // given any generic writing interface, stream the full working document
         for (self.pieces.items) |piece| {
             const src = switch (piece.buf) {
-                .Original => self.original,
-                .Add => self.add.items,
+                .original => self.original,
+                .add => self.add.items,
             };
             debug.dassert(piece.off <= src.len, "piece offset must be inside it's source buffer");
             debug.dassert(piece.len <= src.len - piece.off, "full piece slice must be inside source buffer");
             try w.writeAll(src[piece.off .. piece.off + piece.len]);
         }
+    }
+
+    pub fn scanFrontierUntil(self: *TextBuffer, line: usize) error{OutOfMemory}!void {
+        // match API with the current faster text buffer, this is a noop here though
+        _ = self;
+        _ = line;
     }
 
     fn findPiece(self: *const TextBuffer, idx: usize) usize {

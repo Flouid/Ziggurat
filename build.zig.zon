@@ -9,6 +9,10 @@
             .url = "git+https://github.com/floooh/sokol-zig.git#59c7eb03b59ff0936bbdf21ae5f7b2df51e5a50a",
             .hash = "sokol-0.1.0-pb1HK4jQLQD-hG8KuP-i7qkA5RY5pVfL7hLg56FlckV0",
         },
+        .win32 = .{
+            .url = "https://github.com/marlersoft/zigwin32/archive/refs/heads/main.tar.gz",
+            .hash = "zigwin32-25.0.28-preview-AAAAANd_5APbcon3QqoYfLKnJ13fiBGJSGq9YrVZsfI-",
+        },
     },
     .paths = .{
         "build.zig",

@@ -21,27 +21,24 @@ pub const Document = struct {
     buffer: TextBuffer,
     caret: Caret,
     anchor: ?Caret = null,
-    owned_src: []const u8,
+    src: []const u8,
     alloc: std.mem.Allocator,
     max_cols: usize = 0,
 
     pub fn init(alloc: std.mem.Allocator, original: []const u8) error{ OutOfMemory, FileTooBig }!Document {
-        // creating an owned copy gives the document full ownership, even over string literals
-        const owned = try alloc.dupe(u8, original);
         return .{
-            .buffer = try TextBuffer.init(alloc, owned),
+            .buffer = try TextBuffer.init(alloc, original),
             .caret = .{
                 .byte = 0,
                 .pos = .{ .row = 0, .col = 0 },
                 .preferred_col = 0,
             },
-            .owned_src = owned,
+            .src = original,
             .alloc = alloc,
         };
     }
 
     pub fn deinit(self: *Document) void {
-        self.alloc.free(self.owned_src);
         self.buffer.deinit();
     }
 
@@ -49,6 +46,9 @@ pub const Document = struct {
 
     pub fn size(self: *const Document) usize {
         return self.buffer.doc_len;
+    }
+    pub fn revealUpTo(self: *Document, line: usize) error{OutOfMemory}!void {
+        _ = try self.buffer.scanFrontierUntil(line);
     }
     pub fn lineCount(self: *const Document) usize {
         return self.buffer.root.weight_lines + 1;
@@ -294,7 +294,6 @@ pub const Document = struct {
     }
 
     pub fn lineSpan(self: *Document, line: usize) error{OutOfMemory}!Span {
-        debug.dassert(line < self.lineCount(), "line outside of document");
         const start = try self.lineStart(line);
         const end = try self.lineEnd(line);
         debug.dassert(end >= start, "line cannot have negative length");
@@ -307,12 +306,10 @@ pub const Document = struct {
     // navigation helpers
 
     fn lineStart(self: *Document, line: usize) error{OutOfMemory}!usize {
-        debug.dassert(line < self.lineCount(), "line outside of document");
         return self.buffer.byteOfLine(line);
     }
 
     fn lineEnd(self: *Document, line: usize) error{OutOfMemory}!usize {
-        debug.dassert(line < self.lineCount(), "line outside of document");
         return if (line + 1 < self.lineCount()) self.buffer.byteOfLine(line + 1) else self.size();
     }
 
@@ -325,7 +322,6 @@ pub const Document = struct {
     }
 
     fn posToByte(self: *Document, pos: TextPos) error{OutOfMemory}!usize {
-        debug.dassert(pos.row < self.lineCount(), "line outside of document");
         const span = try self.lineSpan(pos.row);
         debug.dassert(pos.col <= span.len, "column outside of line");
         const start = try self.buffer.byteOfLine(pos.row);
@@ -354,12 +350,12 @@ pub const Document = struct {
     }
 };
 
-const WordClass = enum { space, char, punct };
+const WordClass = enum { space, ident, punct };
 
 fn classify(byte: u8) WordClass {
     const is_char = (byte >= 'A' and byte <= 'Z') or (byte >= 'a' and byte <= 'z');
     const is_digit = (byte >= '0' and byte <= '9');
-    if (is_char or is_digit or byte == '_') return .char;
+    if (is_char or is_digit or byte == '_') return .ident;
     if (byte == ' ' or byte == '\t' or byte == '\n' or byte == '\r') return .space;
     return .punct;
 }

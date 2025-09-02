@@ -133,10 +133,15 @@ fn addCoreModules(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std
         },
     });
 
+    const dep_win32 = b.dependency("win32", .{});
+
     const file_io_mod = b.addModule("file_io", .{
         .root_source_file = b.path("src/core/file_io.zig"),
         .target = target,
         .optimize = optimize,
+        .imports = &.{
+            .{ .name = "win32", .module = dep_win32.module("win32") },
+        },
     });
 
     const controller_mod = b.addModule("controller", .{
@@ -217,5 +222,10 @@ fn addApps(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
             },
         }),
     });
+    // if (target.result.os.tag == .windows) {
+    //     const win32_dep = b.dependency("win32", .{});
+    //     main.root_module.addImport("win32", win32_dep.module("win32"));
+    //     main.linkSystemLibrary("kernel32");
+    // }
     b.installArtifact(main);
 }
