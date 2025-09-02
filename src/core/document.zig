@@ -336,6 +336,7 @@ pub const Document = struct {
         if (i == 0) return 0;
         i -= 1;
         const class = classify(self.buffer.peek(i));
+        if (class == .newline) return i+1;
         while (i > 0 and classify(self.buffer.peek(i - 1)) == class) : (i -= 1) {}
         return i;
     }
@@ -346,17 +347,19 @@ pub const Document = struct {
         while (i < n and classify(self.buffer.peek(i)) == .space) : (i += 1) {}
         if (i == n) return i;
         const class = classify(self.buffer.peek(i));
+        if (class == .newline) return i+1;
         while (i < n and classify(self.buffer.peek(i)) == class) : (i += 1) {}
         return i;
     }
 };
 
-const WordClass = enum { space, ident, punct };
+const WordClass = enum { space, ident, punct, newline };
 
 fn classify(byte: u8) WordClass {
     const is_char = (byte >= 'A' and byte <= 'Z') or (byte >= 'a' and byte <= 'z');
     const is_digit = (byte >= '0' and byte <= '9');
     if (is_char or is_digit or byte == '_') return .ident;
-    if (byte == ' ' or byte == '\t' or byte == '\n' or byte == '\r') return .space;
+    if (byte == '\r' or byte == '\n') return .newline;
+    if (byte == ' ' or byte == '\t') return .space;
     return .punct;
 }
