@@ -191,8 +191,8 @@ pub const TextBuffer = struct {
         }
     }
 
-    pub fn ensureScanned(self: *TextBuffer, line: usize) error{OutOfMemory}!void {
-        // match API with the current faster text buffer, this is a noop here thop
+    pub fn scanFrontierUntil(self: *TextBuffer, line: usize) error{OutOfMemory}!void {
+        // match API with the current faster text buffer, this is a noop here though
         _ = self;
         _ = line;
     }

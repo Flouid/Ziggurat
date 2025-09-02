@@ -27,6 +27,8 @@ pub const TextBuffer = struct {
     o_idx: NewlineIndex = .{},
     a_idx: NewlineIndex = .{},
     root: *Node,
+    frontier: Frontier,
+    scanned_bytes: usize,
     doc_len: usize,
     alloc: std.mem.Allocator,
 
@@ -44,6 +46,8 @@ pub const TextBuffer = struct {
         return TextBuffer{
             .original = original,
             .root = leaf,
+            .frontier = .{ .leaf = leaf, .piece_idx = 0, .offset = 0 },
+            .scanned_bytes = 0,
             .doc_len = original.len,
             .alloc = alloc,
         };
@@ -67,10 +71,6 @@ pub const TextBuffer = struct {
         const found = findAt(self.root, at);
         const leaf = found.leaf;
         const pieces = leafPieces(leaf);
-        // NOTE: inserts occur at the caret, which should always be within a scanned portion of the document!
-        // So the insert should always occur WITHIN the scanned prefix of a given leaf.
-        // In order to maintain the invariant, we just need to bump the scanned prefix by the number of inserted bytes
-        const scanned_bytes = scannedPrefixBytes(leaf);
         // under the ideal case, new edits are appended to the end and extend an existing piece
         const fast_path = fastAppendIfPossible(leaf, span, at, self.doc_len);
         // if NOT, we splice a new piece into the leaf, attempt merging, and check for overflow
@@ -81,9 +81,13 @@ pub const TextBuffer = struct {
         }
         bubbleByteDelta(leaf, text.len, false);
         bubbleLineDelta(leaf, newlines, false);
-        setScannedPrefix(leaf, scanned_bytes + text.len);
         self.doc_len += text.len;
         if (!fast_path) try self.bubbleOverflowUp(leaf);
+        // given that contract that inserts should always occur inside the scanned region, this should ALWAYS be true
+        debug.dassert(at <= self.scanned_bytes, "insert outside of scanned region of buffer");
+        self.scanned_bytes += text.len;
+        if (self.scanned_bytes >= self.doc_len) return;
+        self.retargetFrontier();
     }
 
     pub fn delete(self: *TextBuffer, span: Span) error{OutOfMemory}!void {
@@ -96,12 +100,7 @@ pub const TextBuffer = struct {
         const left: *Node = leaf;
         while (remaining > 0) {
             const in_leaf = locateInLeaf(leaf, offset);
-            // NOTE: like with insert, deletes should occur at the caret, which is in the scanned portion of the document
-            // So we can maintain invariants by pushing the scanned prefix back by the number of bytes removed
-            const scanned_bytes = scannedPrefixBytes(leaf);
             const removed = try self.deleteFromLeaf(leaf, in_leaf, remaining);
-            const after_remove = if (removed.bytes >= scanned_bytes) 0 else scanned_bytes - removed.bytes;
-            setScannedPrefix(leaf, after_remove);
             bubbleByteDelta(leaf, removed.bytes, true);
             bubbleLineDelta(leaf, removed.lines, true);
             remaining -= removed.bytes;
@@ -117,6 +116,53 @@ pub const TextBuffer = struct {
         self.doc_len -= span.len;
         // it's very possible deleting creates extra pieces, so handle overflow too
         try self.bubbleOverflowUp(leaf);
+        // given that contract that deletes should always occur inside the scanned region, this should ALWAYS be true
+        debug.dassert(span.end() <= self.scanned_bytes, "delete outside of scanned region of buffer");
+        self.scanned_bytes -= span.len;
+        if (self.scanned_bytes >= self.doc_len) return;
+        self.retargetFrontier();
+    }
+
+    pub fn scanFrontierUntil(self: *TextBuffer, line: usize) error{OutOfMemory}!bool {
+        // advances the global frontier until at least line number "line"
+        // returns true when done, false if end of file is reached before satisfying requirement
+        while (self.root.weight_lines < line) {
+            const leaf = self.frontier.leaf;
+            const pieces = leafPiecesConst(leaf).items;
+            // move to next leaf if necessary
+            if (self.frontier.piece_idx >= pieces.len) {
+                const nxt = nextLeaf(leaf) orelse return false;
+                self.frontier = .{ .leaf = nxt, .piece_idx = 0, .offset = 0 };
+                continue;
+            }
+            const piece = pieces[self.frontier.piece_idx];
+            const start = piece.off + self.frontier.offset;
+            const end = piece.off + piece.len();
+            if (piece.buf() == .original) {
+                const page = start / PAGE_SIZE;
+                const page_end = @min((page + 1) * PAGE_SIZE, end);
+                const bytes = page_end - start;
+                const span: Span = .{ .start = start, .len = bytes };
+                const newlines = try self.o_idx.countRange(self.alloc, self.original, span);
+                self.frontier.offset += bytes;
+                self.scanned_bytes += bytes;
+                bubbleLineDelta(leaf, newlines, false);
+                if (self.frontier.offset == piece.len()) {
+                    self.frontier.piece_idx += 1;
+                    self.frontier.offset = 0;
+                }
+            } else {
+                std.debug.print("the frontier should never fall within an add buffer piece!\n", .{});
+                const bytes = end - start;
+                const span: Span = .{ .start = start, .len = bytes };
+                const newlines = try self.a_idx.countRange(self.alloc, self.add.items, span);
+                self.frontier.piece_idx += 1;
+                self.frontier.offset = 0;
+                self.scanned_bytes += bytes;
+                bubbleLineDelta(leaf, newlines, false);
+            }
+        }
+        return true;
     }
 
     pub fn lineOfByte(self: *TextBuffer, at: usize) error{OutOfMemory}!usize {
@@ -163,8 +209,8 @@ pub const TextBuffer = struct {
 
     pub fn byteOfLine(self: *TextBuffer, line: usize) error{OutOfMemory}!usize {
         // map any line number to an index in the working document
-        const in_buffer = try self.scanNodeUntil(self.root, line);
-        debug.dassert(in_buffer, "line out of range");
+        const in_doc = try self.scanFrontierUntil(line);
+        debug.dassert(in_doc, "line index out of range");
         var node = self.root;
         var remaining = line;
         var offset: usize = 0;
@@ -173,10 +219,9 @@ pub const TextBuffer = struct {
             switch (node.children) {
                 .leaf => {
                     const pieces = leafPiecesConst(node).items;
-                    const k: usize = @intCast(node.known_prefix);
                     var acc: usize = 0;
                     var i: usize = 0;
-                    while (i < k) : (i += 1) {
+                    while (i < pieces.len) : (i += 1) {
                         const piece = &pieces[i];
                         // given this is within the known prefix, this is cached and cheap
                         const lines_in_piece = try self.countLinesInPiece(piece);
@@ -184,7 +229,7 @@ pub const TextBuffer = struct {
                         remaining -= lines_in_piece;
                         acc += piece.len();
                     }
-                    // case where the target line is in a partially unscanned piece or newline is partway into a piece
+                    // case where the target line is partway into a piece
                     if (i < pieces.len and remaining > 0) {
                         const piece = &pieces[i];
                         const within_piece = try self.findNthNewlineInPiece(piece, remaining);
@@ -209,11 +254,6 @@ pub const TextBuffer = struct {
             }
         }
         @panic("max iterations reached without finding line in document");
-    }
-
-    pub fn ensureScanned(self: *TextBuffer, line: usize) error{OutOfMemory}!void {
-        // expose a method to ensure at least up to a certain line has been scanned if it exists
-        _ = try self.scanNodeUntil(self.root, line);
     }
 
     pub fn peek(self: *const TextBuffer, at: usize) u8 {
@@ -275,37 +315,21 @@ pub const TextBuffer = struct {
             .leaf => |*pieces| {
                 if (pieces.items.len <= MAX_PIECES) return null;
                 // split half of the pieces into a new sibling
-                const scanned_bytes = scannedPrefixBytes(node);
-                const old_lines = node.weight_lines;
                 const mid = pieces.items.len / 2;
                 const right = try initLeaf(self.alloc);
-                // calculate exactly how many bytes are moving
+                // calculate exactly how many bytes and lines are moving
                 const to_move = pieces.items[mid..];
-                var moved_bytes: usize = 0;
-                for (to_move) |*p| moved_bytes += p.len();
+                const moved = try self.countMovedPieces(to_move);
                 // move them
                 try leafPieces(right).appendSlice(self.alloc, to_move);
                 pieces.shrinkRetainingCapacity(mid);
                 // manually adjust node weights, faster than a full recompute
-                debug.dassert(node.weight_bytes >= moved_bytes, "leaf split byte size underflow");
-                node.weight_bytes -= moved_bytes;
-                right.weight_bytes = moved_bytes;
-                // distribute the scanned bytes across the two leaves
-                const left_scanned = @min(scanned_bytes, node.weight_bytes);
-                const right_scanned = scanned_bytes - left_scanned;
-                // recompute line counts for the scanned prefix on each side
-                node.weight_lines = try self.countLinesInLeafPrefix(node, left_scanned);
-                right.weight_lines = try self.countLinesInLeafPrefix(right, right_scanned);
-                setScannedPrefix(node, left_scanned);
-                setScannedPrefix(right, right_scanned);
-                // local line delta is handled, but we still need to bubble it to the parents
-                const parent = node.parent;
-                if (parent) |p| {
-                    const new_lines = node.weight_lines + right.weight_lines;
-                    if (new_lines >= old_lines) {
-                        bubbleLineDelta(p, new_lines - old_lines, false);
-                    } else bubbleLineDelta(p, old_lines - new_lines, true);
-                }
+                debug.dassert(node.weight_bytes >= moved.bytes, "leaf split byte size underflow");
+                debug.dassert(node.weight_lines >= moved.lines, "leaf split line size underflow");
+                node.weight_bytes -= moved.bytes;
+                node.weight_lines -= moved.lines;
+                right.weight_bytes = moved.bytes;
+                right.weight_lines = moved.lines;
                 // add the newly split node into the tree
                 return self.spliceNodeInTree(node, right);
             },
@@ -329,22 +353,6 @@ pub const TextBuffer = struct {
                 return self.spliceNodeInTree(node, right);
             },
         }
-    }
-
-    fn countLinesInLeafPrefix(self: *TextBuffer, leaf: *const Node, bytes: usize) error{OutOfMemory}!usize {
-        // when splitting nodes, we can determine easily how long the scanned prefix is in bytes, but newlines are harder.
-        // This recomputes them, but since the precondition is that these pieces have been scanned (indexed), it should be cheap
-        debug.dassert(isLeaf(leaf), "countLinesInLeafPrefix must be called on a leaf");
-        const pieces = leafPiecesConst(leaf).items;
-        var remaining = bytes;
-        var lines: usize = 0;
-        var i: usize = 0;
-        while (i < pieces.len and remaining > 0) : (i += 1) {
-            const take = @min(remaining, pieces[i].len());
-            lines += try self.countLinesInPieceRange(&pieces[i], 0, take);
-            remaining -= take;
-        }
-        return lines;
     }
 
     fn spliceNodeInTree(self: *TextBuffer, old: *Node, new: *Node) error{OutOfMemory}!?*Node {
@@ -450,14 +458,7 @@ pub const TextBuffer = struct {
                 debug.dassert(dst_pieces.items.len > 0, "destination must not start empty");
                 // calculate exactly how many bytes and lines are moving
                 const to_move = src_pieces.items[start .. start + count];
-                var moved_bytes: usize = 0;
-                for (to_move) |*p| moved_bytes += p.len();
-                const scanned_src = scannedPrefixBytes(src);
-                const scanned_dst = scannedPrefixBytes(dst);
-                const bytes_before_range = if (start == 0) 0 else src.weight_bytes - moved_bytes;
-                var scanned_overlap: usize = 0;
-                if (scanned_src > bytes_before_range) scanned_overlap = @min(moved_bytes, scanned_src - bytes_before_range);
-                const line_overlap = try self.countLinesInPieces(to_move, scanned_overlap, if (start == 0) .front else .back);
+                const moved = try self.countMovedPieces(to_move);
                 switch (side) {
                     .front => try dst_pieces.insertSlice(self.alloc, 0, to_move),
                     .back => try dst_pieces.appendSlice(self.alloc, to_move),
@@ -469,20 +470,10 @@ pub const TextBuffer = struct {
                     .back => dst_pieces.items.len - count,
                 };
                 mergeAround(dst, center);
-                bubbleByteDelta(src, moved_bytes, true);
-                bubbleByteDelta(dst, moved_bytes, false);
-                // source loses scanned bytes/lines from the left
-                if (scanned_overlap > 0) {
-                    bubbleLineDelta(src, line_overlap, true);
-                    const new_scanned = if (scanned_overlap >= scanned_src) 0 else scanned_src - scanned_overlap;
-                    setScannedPrefix(src, new_scanned);
-                }
-                // destination gains scanned bytes/lines only on at the front
-                if (side == .front and scanned_overlap > 0) {
-                    bubbleLineDelta(dst, line_overlap, false);
-                    const new_scanned = scanned_dst + scanned_overlap;
-                    setScannedPrefix(dst, new_scanned);
-                }
+                bubbleByteDelta(src, moved.bytes, true);
+                bubbleByteDelta(dst, moved.bytes, false);
+                bubbleLineDelta(src, moved.lines, true);
+                bubbleLineDelta(dst, moved.lines, false);
             },
             .internal => {
                 const src_children = childList(src);
@@ -653,6 +644,16 @@ pub const TextBuffer = struct {
 
     const MoveResult = struct { bytes: usize, lines: usize };
 
+    fn countMovedPieces(self: *TextBuffer, to_move: []Piece) error{OutOfMemory}!MoveResult {
+        var moved_bytes: usize = 0;
+        var moved_lines: usize = 0;
+        for (to_move) |*piece| {
+            moved_bytes += piece.len();
+            moved_lines += try self.countLinesInPiece(piece);
+        }
+        return .{ .bytes = moved_bytes, .lines = moved_lines };
+    }
+
     fn countMovedNodes(to_move: []*Node) MoveResult {
         var moved_bytes: usize = 0;
         var moved_lines: usize = 0;
@@ -672,60 +673,15 @@ pub const TextBuffer = struct {
         return idx - p.off;
     }
 
-    fn scanNodeUntil(self: *TextBuffer, node: *Node, line: usize) error{OutOfMemory}!bool {
-        // scan a subsection of the tree recursively until enough lines have been seen to satisfy the query
-        // if there are enough lines in the tree, return true. Otherwise false
-        if (line <= node.weight_lines or isExact(node)) return true;
-        var i: usize = @intCast(node.known_prefix);
-        switch (node.children) {
-            .leaf => {
-                const pieces = leafPiecesConst(node).items;
-                const old_weight = node.weight_lines;
-                while (i < pieces.len and node.weight_lines < line) : (i += 1) {
-                    const p = pieces[i];
-                    var start = p.off + node.frontier_byte;
-                    const end = p.off + p.len();
-                    switch (p.buf()) {
-                        .original => {
-                            // pieces from the original document may be enormous, multiple GB.
-                            // We don't want to just count the entire piece in one batch, rather advance page-by-page
-                            // until we've seen enough newlines to satisfy the query
-                            while (node.weight_lines < line and start < end) {
-                                const page = start / PAGE_SIZE;
-                                const page_end = @min((page + 1) * PAGE_SIZE, end);
-                                const span: Span = .{ .start = start, .len = page_end - start };
-                                node.weight_lines += try self.o_idx.countRange(self.alloc, self.original, span);
-                                start = page_end;
-                                node.frontier_byte += span.len;
-                                if (node.frontier_byte == p.len()) {
-                                    node.known_prefix += 1;
-                                    node.frontier_byte = 0;
-                                }
-                            }
-                        },
-                        .add => {
-                            // pieces from the add buffer can generally be assumed to be small enough to count in a single batch
-                            const span: Span = .{ .start = start, .len = p.len() - node.frontier_byte };
-                            node.weight_lines += try self.a_idx.countRange(self.alloc, self.add.items, span);
-                            node.known_prefix += 1;
-                            node.frontier_byte = 0;
-                        },
-                    }
-                }
-                const delta = node.weight_lines - old_weight;
-                if (delta > 0 and node.parent != null) bubbleLineDelta(node.parent.?, delta, false);
-            },
-            .internal => {
-                const children = childListConst(node).items;
-                while (i < children.len and node.weight_lines < line) : (i += 1) {
-                    const remaining = line - node.weight_lines;
-                    const child_goal = children[i].weight_lines + remaining;
-                    _ = try self.scanNodeUntil(children[i], child_goal);
-                    if (isExact(children[i])) node.known_prefix += 1;
-                }
-            },
-        }
-        return node.weight_lines >= line;
+    fn retargetFrontier(self: *TextBuffer) void {
+        debug.dassert(self.scanned_bytes <= self.doc_len, "scanned more bytes than exist in document");
+        const found = findAt(self.root, self.scanned_bytes);
+        const loc = locateInLeaf(found.leaf, found.offset);
+        self.frontier = .{
+            .leaf = found.leaf,
+            .piece_idx = loc.piece_idx,
+            .offset = loc.offset,
+        };
     }
 };
 
@@ -791,7 +747,69 @@ const Piece = struct {
     }
 };
 
+// -------------------- SCANNED FRONTIER TRACKING --------------------
+// The original document may be huge, and we want to avoid any eager newline indexing (O(n) scans).
+// We still need to know when newline counts are accurate though and when we need to index more.
+// To that end, we maintain a frontier which species where exactly the boundary is at all times
+
+const Frontier = struct {
+    leaf: *Node,
+    piece_idx: usize,
+    offset: usize,
+
+    const Ordering = enum { left, same, right };
+
+    fn get_depth(leaf: *const Node) u8 {
+        var cur: ?*Node = leaf;
+        var depth: u8 = 0;
+        while (cur) |node| {
+            depth += 1;
+            cur = node.parent;
+        }
+        return depth;
+    }
+
+    fn compareLeafToFrontier(self: *const Frontier, leaf: *const Node) Ordering {
+        debug.dassert(isLeaf(leaf), "comparing leaf to frontier requires node to be a leaf");
+        // determine if a given leaf is to the left, right, or the same as the frontier
+        const a: *const Node = leaf;
+        const b: *const Node = self.leaf;
+        if (a == b) return .same;
+        var depth_a = get_depth(a);
+        var depth_b: u8 = get_depth(b);
+        // align depths, then ascend together to lowest common ancestor
+        while (depth_a > depth_b) : (depth_a -= 1) a = a.parent.?;
+        while (depth_b > depth_a) : (depth_b -= 1) b = b.parent.?;
+        while (a.parent != b.parent) {
+            a = a.parent.?;
+            b = b.parent.?;
+        }
+        // they share a parent, use sibling indices to compare
+        const parent = a.parent.?;
+        const siblings = childListConst(parent).items;
+        const a_idx = indexOfChild(siblings, a);
+        const b_idx = indexOfChild(siblings, b);
+        return if (a_idx < b_idx) .left else .right;
+    }
+
+    fn scannedBytesInLeaf(self: *const Frontier, leaf: *const Node) usize {
+        debug.dassert(isLeaf(leaf), "scanning bytes in leaf requires node to be a leaf");
+        switch (self.compareLeafToFrontier(leaf)) {
+            .left => return leaf.weight_bytes,
+            .right => return 0,
+            .same => {
+                const pieces = leafPiecesConst(leaf).items;
+                var sum: usize = 0;
+                var i: usize = 0;
+                while (i < self.piece_idx) : (i += 1) sum += pieces[i].len();
+                return sum + self.offset;
+            },
+        }
+    }
+};
+
 // -------------------- TREE (ROPE) IMPLEMENTATION --------------------
+// B-tree which keeps lookups for any particular line or byte in the logical document O(log n)
 
 const MAX_BRANCH = 128;
 const MIN_BRANCH = 8;
@@ -800,14 +818,9 @@ const MIN_PIECES = 8;
 const MAX_ITER = 1_000;
 
 const Node = struct {
-    // This allows for O(log n) searching, insertion, and deletion anywhere
     parent: ?*Node = null,
     weight_bytes: usize = 0,
     weight_lines: usize = 0,
-    // number of children that are known to have a correct line weight. left -> right
-    known_prefix: u8 = 0,
-    // FOR LEAVES ONLY, byte offset into the last scanned piece of frontier
-    frontier_byte: usize = 0,
     // tagged union makes mutual exclusivity between node types explicit.
     // also keeps node size as small as possible by not storing two headers
     children: union(enum) { internal: std.ArrayList(*Node), leaf: std.ArrayList(Piece) },
@@ -902,32 +915,6 @@ fn spareNodes(node: *const Node) usize {
     const count = nodeCount(node);
     const min = nodeMin(node);
     return if (count > min) count - min else 0;
-}
-
-fn isExact(node: *const Node) bool {
-    return node.known_prefix == nodeCount(node);
-}
-
-fn scannedPrefixBytes(leaf: *const Node) usize {
-    // get the total number of bytes which are inside the leaf's scanned prefix
-    debug.dassert(isLeaf(leaf), "only leaves have a scanned prefix");
-    const pieces = leafPiecesConst(leaf).items;
-    const k: usize = @intCast(leaf.known_prefix);
-    var bytes: usize = 0;
-    var i: usize = 0;
-    while (i < k) : (i += 1) bytes += pieces[i].len();
-    return bytes + leaf.frontier_byte;
-}
-
-fn setScannedPrefix(leaf: *Node, bytes: usize) void {
-    // given a total number of known scanned bytes, set the leaf's prefix accordingly
-    debug.dassert(isLeaf(leaf), "only leaves have a scanned prefix");
-    const pieces = leafPiecesConst(leaf).items;
-    var remaining = bytes;
-    var i: usize = 0;
-    while (i < pieces.len and remaining >= pieces[i].len()) : (i += 1) remaining -= pieces[i].len();
-    leaf.known_prefix = @intCast(i);
-    leaf.frontier_byte = remaining;
 }
 
 // navigation within a document and within a leaf

@@ -48,9 +48,7 @@ pub const Document = struct {
         return self.buffer.doc_len;
     }
     pub fn revealUpTo(self: *Document, line: usize) error{OutOfMemory}!void {
-        // line count will be accurate up to at least the given value
-        // layout needs this to make sure that any lines which may appear on the screen have been scanned
-        try self.buffer.ensureScanned(line);
+        _ = try self.buffer.scanFrontierUntil(line);
     }
     pub fn lineCount(self: *const Document) usize {
         return self.buffer.root.weight_lines + 1;
