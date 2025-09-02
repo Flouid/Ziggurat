@@ -12,6 +12,14 @@ pub fn build(b: *std.Build) void {
 
     addApps(b, cli_target, cli_optimize);
     addApps(b, target_win, cli_optimize);
+
+    const mods = addCoreModules(b, cli_target, cli_optimize);
+    const app_tests = b.addTest(.{ .root_module = mods.app });
+
+    const run_app_tests = b.addRunArtifact(app_tests);
+
+    const test_step = b.step("test", "Run tests");
+    test_step.dependOn(&run_app_tests.step);
 }
 
 const CoreModules = struct {
@@ -222,10 +230,5 @@ fn addApps(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
             },
         }),
     });
-    // if (target.result.os.tag == .windows) {
-    //     const win32_dep = b.dependency("win32", .{});
-    //     main.root_module.addImport("win32", win32_dep.module("win32"));
-    //     main.linkSystemLibrary("kernel32");
-    // }
     b.installArtifact(main);
 }

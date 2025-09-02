@@ -28,8 +28,12 @@ const App = struct {
     // use a platform-agnostic memory map for O(1) file loading
     path_in: ?[]const u8 = null,
     mmap: file_io.MappedFile = undefined,
+    // have a headless mode for testing
+    headless: bool = true,
 
-    fn init(self: *App) !void {
+    const preinit: App = .{ .gpa = std.heap.GeneralPurposeAllocator(.{}){} };
+
+    fn initCore(self: *App) !void {
         const gpa = self.gpa.allocator();
         // initialize geometry
         self.geom = .{ .cell_h_px = 8.0, .cell_w_px = 8.0, .pad_x_cells = 0.5, .pad_y_cells = 0.5 };
@@ -40,8 +44,6 @@ const App = struct {
         self.vp = .{ .top_line = 0, .left_col = 0, .dims = self.getScreenDims() };
         // initialize controller
         self.controller = .{ .doc = &self.doc, .vp = &self.vp, .geom = &self.geom };
-        // initialize renderer
-        self.renderer = Renderer.init(gpa, .{}, self.geom);
         // initialize arena for rendering each frame
         self.arena = std.heap.ArenaAllocator.init(gpa);
         // cache initial layout on open
@@ -50,8 +52,19 @@ const App = struct {
         self.last_tick_ns = @intCast(std.time.nanoTimestamp());
     }
 
+    fn initGraphics(self: *App) void {
+        self.headless = false;
+        // initialize renderer
+        self.renderer = Renderer.init(self.gpa.allocator(), .{}, self.geom);
+    }
+
+    fn init(self: *App) !void {
+        try self.initCore();
+        self.initGraphics();
+    }
+
     fn deinit(self: *App) void {
-        self.renderer.deinit();
+        if (!self.headless) self.renderer.deinit();
         self.doc.deinit();
         self.arena.deinit();
         _ = self.gpa.deinit();
@@ -93,12 +106,14 @@ const App = struct {
     }
 
     fn getScreenDims(self: *const App) ScreenDims {
-        return self.geom.pixelDimsToScreenDims(.{ .w = @floatFromInt(sapp.width()), .h = @floatFromInt(sapp.height()) });
+        if (sapp.isvalid()) {
+            return self.geom.pixelDimsToScreenDims(.{ .w = @floatFromInt(sapp.width()), .h = @floatFromInt(sapp.height()) });
+        } else return self.geom.pixelDimsToScreenDims(.{ .w = 1024.0, .h = 768.0 });
     }
 };
 
 // GLOBAL app instance, sokol wants this
-var G: App = .{ .gpa = std.heap.GeneralPurposeAllocator(.{}){} };
+var G: App = .preinit;
 
 // sokol callbacks
 
@@ -153,4 +168,103 @@ pub fn run(path: ?[]const u8) !void {
         .event_cb = event_cb,
         .logger = .{ .func = @import("sokol").log.func },
     });
+}
+
+// -------------------- TESTING --------------------
+
+const small_file = "fixtures/example.txt";
+const huge_file = "fixtures/huge_random_ut8.txt";
+
+fn openWith(path: ?[]const u8, app: *App) !void {
+    if (path) |p| app.path_in = p;
+    try app.initCore();
+}
+
+test "opens huge file quickly" {
+    var timer = try std.time.Timer.start();
+    var app: App = .preinit;
+    try openWith(huge_file, &app);
+    defer app.deinit();
+    const init_ns = timer.read();
+    try std.testing.expect(init_ns < std.time.ns_per_s / 10);
+}
+
+test "deletes huge file without hiccup" {
+    var app: App = .preinit;
+    try openWith(huge_file, &app);
+    defer app.deinit();
+    var timer = try std.time.Timer.start();
+    try app.doc.selectDocument();
+    try app.doc.caretBackspace();
+    const del_ns = timer.read();
+    try std.testing.expect(del_ns < std.time.ns_per_s / 10);
+    try std.testing.expect(app.doc.size() == 0);
+}
+
+test "replaces huge file without hiccup" {
+    var app: App = .preinit;
+    try openWith(huge_file, &app);
+    defer app.deinit();
+    var timer = try std.time.Timer.start();
+    try app.doc.selectDocument();
+    try app.doc.caretInsert("hello world!");
+    const del_ns = timer.read();
+    try std.testing.expect(del_ns < std.time.ns_per_s / 10);
+    try std.testing.expect(app.doc.size() == 12);
+}
+
+test "selecting empty line selects document" {
+    var app: App = .preinit;
+    try openWith(small_file, &app);
+    defer app.deinit();
+    try app.doc.moveTo(.{ .row = 4, .col = 0 });
+    try app.doc.selectLine();
+    const selection = app.doc.selectionSpan();
+    try std.testing.expect(selection != null);
+    try std.testing.expect(selection.?.start == 0);
+    try std.testing.expect(selection.?.len == app.doc.size());
+}
+
+test "deleting empty line decrements line count and size" {
+    var app: App = .preinit;
+    try openWith(small_file, &app);
+    defer app.deinit();
+    const old_size = app.doc.size();
+    const old_lines = app.doc.lineCount();
+    try app.doc.moveTo(.{ .row = 4, .col = 0 });
+    try app.doc.caretBackspace();
+    try std.testing.expect(app.doc.size() == old_size - 1);
+    try std.testing.expect(app.doc.lineCount() == old_lines - 1);
+}
+
+test "adding empty line increments line count and size" {
+    var app: App = .preinit;
+    try openWith(small_file, &app);
+    defer app.deinit();
+    const old_size = app.doc.size();
+    const old_lines = app.doc.lineCount();
+    try app.doc.moveTo(.{ .row = 4, .col = 0 });
+    try app.doc.caretInsert("\n");
+    try std.testing.expect(app.doc.size() == old_size + 1);
+    try std.testing.expect(app.doc.lineCount() == old_lines + 1);
+}
+
+test "prefix appends work normally" {
+    var app: App = .preinit;
+    try openWith(small_file, &app);
+    defer app.deinit();
+    const old_size = app.doc.size();
+    try app.doc.caretInsert("hello world!");
+    try std.testing.expect(app.doc.size() == old_size + 12);
+}
+
+test "suffix appends work normally" {
+    var app: App = .preinit;
+    try openWith(small_file, &app);
+    defer app.deinit();
+    const old_size = app.doc.size();
+    try app.doc.selectDocument();
+    try app.doc.moveRight();
+    try app.doc.caretInsert("hello world!");
+    try std.testing.expect(app.doc.size() == old_size + 12);
 }
