@@ -104,7 +104,6 @@ const App = struct {
     fn handleAutoScroll(self: *App) !void {
         const moved = try self.controller.autoScroll();
         if (!moved) return;
-        std.debug.print("mouse is scrolling!\n", .{});
         self.dirty = true;
         const caret_pos = self.doc.caret.pos;
         const n_lines = self.doc.lineCount();
