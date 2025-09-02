@@ -161,6 +161,7 @@ fn addCoreModules(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std
             .{ .name = "document", .module = doc_mod },
             .{ .name = "viewport", .module = viewport_mod },
             .{ .name = "geometry", .module = geom_mod },
+            .{ .name = "types", .module = types_mod },
         },
     });
 

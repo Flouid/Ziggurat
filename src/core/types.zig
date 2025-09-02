@@ -30,6 +30,8 @@ pub const PixelPos = struct {
     // a position on the screen in pixels
     x: f32,
     y: f32,
+
+    pub const origin: PixelPos = .{ .x = 0, .y = 0 };
 };
 
 pub const PixelDims = struct {

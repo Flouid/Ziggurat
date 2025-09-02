@@ -3,6 +3,7 @@ const sapp = @import("sokol").app;
 const Document = @import("document").Document;
 const Viewport = @import("viewport").Viewport;
 const Geometry = @import("geometry").Geometry;
+const PixelPos = @import("types").PixelPos;
 
 const Y_SCROLL = 2;
 const X_SCROLL = 2;
@@ -24,9 +25,9 @@ pub const Controller = struct {
     mouse_held: bool = false,
     click_count: u8 = 0,
     last_click_ms: u64 = 0,
-    last_click_x: f32 = 0,
-    last_click_y: f32 = 0,
+    last_click_pos: PixelPos = .origin,
     last_button: sapp.Mousebutton = .LEFT,
+    mouse_pos: PixelPos = .origin,
 
     const double_click_ms: u64 = 400;
     const click_slop_sq: f32 = 36;
@@ -98,7 +99,7 @@ pub const Controller = struct {
                 // determine if this is part of a sequence of clicks
                 const button_match = btn == self.last_button;
                 const fast_enough = now - self.last_click_ms <= double_click_ms;
-                const close_enough = Geometry.distanceSquared(self.last_click_x, self.last_click_y, x, y) <= click_slop_sq;
+                const close_enough = Geometry.distanceSquared(self.last_click_pos.x, self.last_click_pos.y, x, y) <= click_slop_sq;
                 const click_seq = button_match and fast_enough and close_enough;
                 // track internal state accordingly
                 if (click_seq) {
@@ -108,8 +109,7 @@ pub const Controller = struct {
                     self.last_button = btn;
                 }
                 self.last_click_ms = now;
-                self.last_click_x = x;
-                self.last_click_y = y;
+                self.last_click_pos = .{ .x = x, .y = y };
                 // handle each case
                 const pos = try self.geom.mouseToTextPos(self.doc, self.vp, x, y);
                 if (pos == null) return .noop;
@@ -127,6 +127,7 @@ pub const Controller = struct {
                 return .edit;
             },
             .MOUSE_MOVE => {
+                self.mouse_pos = .{ .x = ev.*.mouse_x, .y = ev.*.mouse_y };
                 if (!self.mouse_held) return .noop;
                 const pos = try self.geom.mouseToTextPos(self.doc, self.vp, ev.*.mouse_x, ev.*.mouse_y);
                 if (pos) |p| try self.doc.moveTo(p);
@@ -169,6 +170,17 @@ pub const Controller = struct {
         const n_cols = self.doc.lineLength();
         self.vp.ensureCaretVisible(caret_pos, n_lines, n_cols);
         return .edit;
+    }
+
+    pub fn autoScroll(self: *const Controller) !bool {
+        if (!self.doc.hasSelection() or !self.mouse_held) return false;
+        const pos = try self.geom.mouseToTextPos(self.doc, self.vp, self.mouse_pos.x, self.mouse_pos.y);
+        if (pos == null) return false;
+        const mp = pos.?;
+        const cp = self.doc.caret.pos;
+        if (mp.row == cp.row and mp.col == cp.col) return false;
+        try self.doc.moveTo(mp);
+        return true;
     }
 };
 

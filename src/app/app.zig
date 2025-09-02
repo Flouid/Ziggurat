@@ -72,12 +72,13 @@ const App = struct {
     }
 
     fn frame(self: *App) !void {
-        // manage caret blinking
+        // manage caret blinking and autoscroll
         const now: u64 = @intCast(std.time.nanoTimestamp());
         const dt = now - self.last_tick_ns;
         self.last_tick_ns = now;
         self.blink_accum_ns = (self.blink_accum_ns + dt) % self.blink_period_ns;
         const draw_caret = self.blink_accum_ns < self.blink_period_ns / 2;
+        try self.handleAutoScroll();
         // rebuild the layout if an edit occured since last frame
         if (self.dirty) {
             self.dirty = false;
@@ -98,6 +99,17 @@ const App = struct {
             try self.doc.materialize(&w);
             try file_io.write(p, buf);
         } else std.log.err("cannot save unnamed document\n", .{});
+    }
+
+    fn handleAutoScroll(self: *App) !void {
+        const moved = try self.controller.autoScroll();
+        if (!moved) return;
+        std.debug.print("mouse is scrolling!\n", .{});
+        self.dirty = true;
+        const caret_pos = self.doc.caret.pos;
+        const n_lines = self.doc.lineCount();
+        const n_cols = self.doc.lineLength();
+        self.vp.ensureCaretVisible(caret_pos, n_lines, n_cols);
     }
 
     fn refreshLayout(self: *App) !void {
