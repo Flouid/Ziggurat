@@ -302,8 +302,8 @@ pub const Document = struct {
         const start = try self.lineStart(line);
         const end = try self.lineEnd(line);
         debug.dassert(end >= start, "line cannot have negative length");
-        // subtracts newline for all lines except the last (no newline)
-        const len = if (line + 1 < self.lineCount()) end - start - 1 else end - start;
+        // subtracts newline for all lines except the last (no newline) and empty lines (0 length)
+        const len = if (start < end and line + 1 < self.lineCount()) end - start - 1 else end - start;
         if (len > self.max_cols) self.max_cols = len;
         return .{ .start = start, .len = len };
     }

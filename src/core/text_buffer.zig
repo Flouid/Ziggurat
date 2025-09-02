@@ -133,13 +133,12 @@ pub const TextBuffer = struct {
                 self.frontier = .{ .leaf = nxt, .piece_idx = 0, .offset = 0 };
                 continue;
             }
-            const piece = pieces[self.frontier.piece_idx];
-            debug.dassert(piece.buf() == .original, "the frontier should never fall within an add buffer piece\n");
+            const piece = &pieces[self.frontier.piece_idx];
             const start = piece.off + self.frontier.offset;
             const end = piece.off + piece.len();
             const page_end = @min(((start / PAGE_SIZE) + 1) * PAGE_SIZE, end);
             const span: Span = .{ .start = start, .len = page_end - start };
-            const newlines = try self.o_idx.countRange(self.alloc, self.original, span);
+            const newlines = try self.countLinesInPieceRange(piece, self.frontier.offset, page_end - start);
             self.frontier.offset += span.len;
             self.scanned_bytes += span.len;
             bubbleLineDelta(leaf, newlines, false);
@@ -595,7 +594,7 @@ pub const TextBuffer = struct {
         }
     }
 
-    fn countLinesInPieceRange(self: *TextBuffer, p: *Piece, offset: usize, len: usize) error{OutOfMemory}!usize {
+    fn countLinesInPieceRange(self: *TextBuffer, p: *const Piece, offset: usize, len: usize) error{OutOfMemory}!usize {
         // count newlines within some subset of a piece's bytes
         const span: Span = .{ .start = p.off + offset, .len = len };
         debug.dassert(span.end() <= p.off + p.len(), "cannot count lines past the end of the piece");
@@ -722,6 +721,7 @@ const Frontier = struct {
 
     fn scannedBytesInLeaf(self: *const Frontier) usize {
         const pieces = leafPiecesConst(self.leaf).items;
+        if (self.piece_idx >= pieces.len) return self.leaf.weight_bytes;
         var acc: usize = 0;
         var i: usize = 0;
         while (i < self.piece_idx) : (i += 1) acc += pieces[i].len();
