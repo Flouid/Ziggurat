@@ -89,9 +89,22 @@ pub const TextBuffer = struct {
         if (self.scanned_bytes < self.doc_len) self.retargetFrontier();
     }
 
+    pub fn reset(self: *TextBuffer) error{OutOfMemory}!void {
+        freeTree(self.alloc, self.root);
+        self.root = try initLeaf(self.alloc);
+        self.scanned_bytes = 0;
+        self.retargetFrontier();
+    }
+
     pub fn delete(self: *TextBuffer, span: Span) error{OutOfMemory}!void {
         debug.dassert(span.end() <= self.doc_len, "cannot delete outside of document");
         debug.dassert(span.len > 0, "cannot delete empty span");
+        // special case for deleting the entire document
+        if (span.start == 0 and span.len == self.doc_len) {
+            try self.reset();
+            return;
+        }
+        // general case
         var remaining = span.len;
         const found = findAt(self.root, span.start);
         var leaf = found.leaf;

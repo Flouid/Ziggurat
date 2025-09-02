@@ -15,6 +15,8 @@ pub const Caret = struct {
     byte: usize,
     pos: TextPos,
     preferred_col: usize,
+
+    const begin: Caret = .{ .byte = 0, .pos = .{ .row = 0, .col = 0 }, .preferred_col = 0 };
 };
 
 pub const Document = struct {
@@ -28,11 +30,7 @@ pub const Document = struct {
     pub fn init(alloc: std.mem.Allocator, original: []const u8) error{ OutOfMemory, FileTooBig }!Document {
         return .{
             .buffer = try TextBuffer.init(alloc, original),
-            .caret = .{
-                .byte = 0,
-                .pos = .{ .row = 0, .col = 0 },
-                .preferred_col = 0,
-            },
+            .caret = .begin,
             .src = original,
             .alloc = alloc,
         };
@@ -85,10 +83,18 @@ pub const Document = struct {
         // default case, delete from the caret and one at a time
         var c = self.caret;
         var take: usize = 1;
+        // handle selections
         if (self.selectionSpan()) |span| {
             // if caret is behind span start, delete from the start instead
             if (self.anchor.?.byte > c.byte) c = self.anchor.?;
             take = span.len;
+        }
+        // special case, delete entire document
+        if (take == self.size()) {
+            try self.buffer.reset();
+            self.caret = .begin;
+            self.resetSelection();
+            return;
         }
         // if the cursor is at the start of the document, silently do nothing
         if (c.byte == 0) return;
@@ -341,7 +347,7 @@ pub const Document = struct {
         if (i == 0) return 0;
         i -= 1;
         const class = classify(self.buffer.peek(i));
-        if (class == .newline) return i+1;
+        if (class == .newline) return i + 1;
         while (i > 0 and classify(self.buffer.peek(i - 1)) == class) : (i -= 1) {}
         return i;
     }
@@ -352,7 +358,7 @@ pub const Document = struct {
         while (i < n and classify(self.buffer.peek(i)) == .space) : (i += 1) {}
         if (i == n) return i;
         const class = classify(self.buffer.peek(i));
-        if (class == .newline) return i+1;
+        if (class == .newline) return i + 1;
         while (i < n and classify(self.buffer.peek(i)) == class) : (i += 1) {}
         return i;
     }
