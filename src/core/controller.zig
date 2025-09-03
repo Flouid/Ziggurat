@@ -50,19 +50,19 @@ pub const Controller = struct {
                 switch (key) {
                     .RIGHT => {
                         if (modifiers.ctrl) {
-                            try traverseWithModifiers(self.doc, modifiers, Document.moveWordRight);
-                        } else try traverseWithModifiers(self.doc, modifiers, Document.moveRight);
+                            try moveWithModifiers(self.doc, modifiers, Document.moveWordRight);
+                        } else try moveWithModifiers(self.doc, modifiers, Document.moveRight);
                     },
                     .LEFT => {
                         if (modifiers.ctrl) {
-                            try traverseWithModifiers(self.doc, modifiers, Document.moveWordLeft);
-                        } else try traverseWithModifiers(self.doc, modifiers, Document.moveLeft);
+                            try moveWithModifiers(self.doc, modifiers, Document.moveWordLeft);
+                        } else try moveWithModifiers(self.doc, modifiers, Document.moveLeft);
                     },
-                    .DOWN => try traverseWithModifiers(self.doc, modifiers, Document.moveDown),
-                    .UP => try traverseWithModifiers(self.doc, modifiers, Document.moveUp),
+                    .DOWN => try moveWithModifiers(self.doc, modifiers, Document.moveDown),
+                    .UP => try moveWithModifiers(self.doc, modifiers, Document.moveUp),
                     // TODO: fix home and end, on my machine the events are KP_1 and KP_7 with or without numlock
-                    .HOME => try traverseWithModifiers(self.doc, modifiers, Document.moveHome),
-                    .END => try traverseWithModifiers(self.doc, modifiers, Document.moveEnd),
+                    .HOME => try moveWithModifiers(self.doc, modifiers, Document.moveHome),
+                    .END => try moveWithModifiers(self.doc, modifiers, Document.moveEnd),
                     .BACKSPACE => {
                         if (modifiers.ctrl) {
                             try self.doc.deleteWordLeft();
@@ -198,8 +198,12 @@ fn modifiersOf(ev: [*c]const sapp.Event) Modifiers {
     };
 }
 
-fn traverseWithModifiers(doc: *Document, modifiers: Modifiers, comptime traverse: fn (*Document, bool) error{OutOfMemory}!void) !void {
+fn moveWithModifiers(doc: *Document, modifiers: Modifiers, comptime move: fn (*Document, bool) error{OutOfMemory}!void) !void {
     if (modifiers.shift and !doc.hasSelection()) doc.startSelection();
     const cancel_selection = doc.hasSelection() and !modifiers.shift;
-    try traverse(doc, cancel_selection);
+    try move(doc, cancel_selection);
+    // there may have been an EMPTY selection and no shift prior to the move
+    // the end result is that nothing should be selected, but triggering cancel logic is also incorrect
+    // in this specific case, reset the selection after the move
+    if (doc.hasSelection() and !modifiers.shift) doc.resetSelection();
 }
