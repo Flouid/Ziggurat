@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const win32 = if (builtin.os.tag == .windows) @import("win32") else struct {};
 
 const MAX_FILE_SIZE = @as(usize, 1) << (@bitSizeOf(usize) - 1);
+const TEMP_PATH = ".ziggurat_temp";
 
 pub fn read(alloc: std.mem.Allocator, path: []const u8) ![]u8 {
     var file = std.fs.cwd().openFile(path, .{}) catch |e| switch (e) {
@@ -13,11 +14,18 @@ pub fn read(alloc: std.mem.Allocator, path: []const u8) ![]u8 {
     return try file.readToEndAlloc(alloc, MAX_FILE_SIZE);
 }
 
+pub fn tempPath(alloc: std.mem.Allocator, path: []const u8) ![]u8 {
+    const dir = std.fs.path.dirname(path) orelse ".";
+    return try std.fs.path.join(alloc, &.{ dir, TEMP_PATH });
+}
+
 pub fn write(path: []const u8, bytes: []const u8) !void {
     var file = try std.fs.cwd().createFile(path, .{ .truncate = true });
     defer file.close();
     try file.writeAll(bytes);
 }
+
+// -------------------- MEMORY MAPPING --------------------
 
 const Platform = if (builtin.os.tag == .windows) struct {
     mapping: ?win32.foundation.HANDLE,

@@ -28,7 +28,7 @@ pub const TextBuffer = struct {
     a_idx: NewlineIndex = .{},
     root: *Node,
     frontier: Frontier,
-    scanned_bytes: usize,
+    scanned_bytes: usize = 0,
     doc_len: usize,
     alloc: std.mem.Allocator,
 
@@ -47,7 +47,6 @@ pub const TextBuffer = struct {
             .original = original,
             .root = leaf,
             .frontier = .{ .leaf = leaf, .piece_idx = 0, .offset = 0 },
-            .scanned_bytes = 0,
             .doc_len = original.len,
             .alloc = alloc,
         };
@@ -58,6 +57,23 @@ pub const TextBuffer = struct {
         self.o_idx.deinit(self.alloc);
         self.a_idx.deinit(self.alloc);
         freeTree(self.alloc, self.root);
+    }
+
+    pub fn reinit(self: *TextBuffer, new_original: []const u8, logical_idx: NewlineIndex) error{ OutOfMemory, FileTooBig }!TextBuffer {
+        // NOTE: when this is called, the original source buffer should be stale and any access is UB
+        debug.dassert(self.doc_len == new_original.len, "new source buffer and logical document length must match");
+        var new_buffer = try TextBuffer.init(self.alloc, new_original);
+        errdefer new_buffer.deinit();
+        new_buffer.o_idx = logical_idx;
+        // scan may include portions of buffers which were subsequently deleted. These bytes can safely be discarded
+        new_buffer.scanned_bytes = @min(self.scanned_bytes, self.doc_len);
+        if (new_buffer.scanned_bytes > 0) {
+            const span: Span = .{ .start = 0, .len = new_buffer.scanned_bytes };
+            new_buffer.root.weight_lines = try new_buffer.o_idx.countRange(self.alloc, new_original, span);
+        }
+        new_buffer.retargetFrontier();
+        self.deinit();
+        return new_buffer;
     }
 
     pub fn insert(self: *TextBuffer, at: usize, text: []const u8) error{OutOfMemory}!void {
@@ -286,6 +302,60 @@ pub const TextBuffer = struct {
         debug.dassert(span.end() <= self.doc_len, "view out of bounds");
         debug.dassert(span.len > 0, "cannot provide an empty view");
         return SliceIter.init(self, span);
+    }
+
+    pub fn buildLogicalIndex(self: *TextBuffer) error{OutOfMemory}!NewlineIndex {
+        var out: NewlineIndex = .empty;
+        const len = @min(self.scanned_bytes, self.doc_len);
+        if (len == 0) return out;
+        // only index up to the amount of bytes previously scanned. No extra work
+        try out.ensureCapacityForLen(self.alloc, len);
+        var prefix: usize = 0;
+        var doc_idx: usize = 0;
+        var page_idx: usize = 0;
+        const last_page = (len - 1) / PAGE_SIZE;
+        // walk leaves left to right...
+        var leaf: ?*Node = leftmostDescendant(self.root);
+        while (leaf != null and page_idx <= last_page) {
+            const pieces = leafPiecesConst(leaf.?).items;
+            var i: usize = 0;
+            // walk each piece in the leaf...
+            while (i < pieces.len and page_idx <= last_page) : (i += 1) {
+                const piece = pieces[i];
+                var src: []const u8 = undefined;
+                var idx: *NewlineIndex = undefined;
+                switch (piece.buf()) {
+                    .original => {
+                        src = self.original;
+                        idx = &self.o_idx;
+                    },
+                    .add => {
+                        src = self.add.items;
+                        idx = &self.a_idx;
+                    },
+                }
+                var remaining = piece.len();
+                var src_offset = piece.off;
+                // walk each page in the piece and count lines into combined index
+                while (remaining > 0 and page_idx <= last_page) {
+                    const page_end = @min(((doc_idx / PAGE_SIZE) + 1) * PAGE_SIZE, len);
+                    const take = @min(remaining, page_end - doc_idx);
+                    const span: Span = .{ .start = src_offset, .len = take };
+                    const newlines = try idx.countRange(self.alloc, src, span);
+                    prefix += newlines;
+                    doc_idx += take;
+                    src_offset += take;
+                    remaining -= take;
+                    if (doc_idx == page_end) {
+                        out.prefix.items[page_idx] = prefix;
+                        out.done.items[page_idx] = true;
+                        page_idx += 1;
+                    }
+                }
+            }
+            leaf = nextLeaf(leaf.?);
+        }
+        return out;
     }
 
     // -------------------- EVERYTHING BENEATH THIS LINE IS A PRIVATE IMPLEMENTATION DETAIL --------------------
@@ -1094,6 +1164,8 @@ const NewlineIndex = struct {
     // NOTE: on load the document is a single piece, and must be O(n) scanned to support line count metrics.
     done: std.ArrayList(bool) = .empty,
     prefix: std.ArrayList(usize) = .empty,
+
+    const empty: NewlineIndex = .{};
 
     fn deinit(self: *NewlineIndex, alloc: std.mem.Allocator) void {
         self.done.deinit(alloc);

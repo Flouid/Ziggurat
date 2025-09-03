@@ -92,12 +92,27 @@ const App = struct {
 
     fn save(self: *App) !void {
         if (self.path_in) |p| {
+            const cwd = std.fs.cwd();
             const a = self.gpa.allocator();
-            const buf = try a.alloc(u8, self.doc.size());
-            defer a.free(buf);
-            var w: std.Io.Writer = .fixed(buf);
-            try self.doc.materialize(&w);
-            try file_io.write(p, buf);
+            // write the current document to a temp file
+            const temp_path = try file_io.tempPath(a, p);
+            defer a.free(temp_path);
+            var f = try cwd.createFile(temp_path, .{ .truncate = true });
+            defer f.close();
+            var buf: [64 * 1024]u8 = undefined;
+            var fw = f.writer(buf[0..]);
+            const w = &fw.interface;
+            try self.doc.materialize(w);
+            try w.flush();
+            try f.sync();
+            // build a logical document index for the current file
+            const logical_idx = try self.doc.buffer.buildLogicalIndex();
+            // unmap and delete the old source file, rename temp to it, and build new mmap
+            self.mmap.deinit();
+            try cwd.rename(temp_path, p);
+            self.mmap = try file_io.MappedFile.initFromPath(p);
+            // reinitialize the document's text buffer using the logical index created from the old one
+            self.doc.buffer = try self.doc.buffer.reinit(self.mmap.bytes, logical_idx);
         } else std.log.err("cannot save unnamed document\n", .{});
     }
 
