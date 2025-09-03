@@ -91,13 +91,17 @@ const App = struct {
     }
 
     fn save(self: *App) !void {
-        if (self.path_in) |p| {
+            if (self.path_in) |p| {
             const a = self.gpa.allocator();
-            const buf = try a.alloc(u8, self.doc.size());
-            defer a.free(buf);
-            var w: std.Io.Writer = .fixed(buf);
-            try self.doc.materialize(&w);
-            try file_io.write(p, buf);
+            const temp_path = try file_io.tempPath(a, p);
+            defer a.free(temp_path);
+            var f = try std.fs.cwd().createFile(temp_path, .{ .truncate = true });
+            defer f.close();
+            var buf: [64 * 1024]u8 = undefined;
+            var fw = f.writer(buf[0..]);
+            const w = &fw.interface;
+            try self.doc.materialize(w);
+            try w.flush();
         } else std.log.err("cannot save unnamed document\n", .{});
     }
 
