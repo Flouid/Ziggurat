@@ -275,7 +275,81 @@ test "suffix appends work normally" {
     defer app.deinit();
     const old_size = app.doc.size();
     try app.doc.selectDocument();
-    try app.doc.moveRight();
+    try app.doc.moveRight(true);
     try app.doc.caretInsert("hello world!");
     try std.testing.expect(app.doc.size() == old_size + 12);
+}
+
+test "word selection and deletion works as expected" {
+    var app: App = .preinit;
+    try openWith(small_file, &app);
+    defer app.deinit();
+    try app.doc.moveTo(.{ .row = 0, .col = 6 });
+    try app.doc.selectWord();
+    const selection = app.doc.selectionSpan();
+    try std.testing.expect(selection != null);
+    try std.testing.expect(selection.?.start == 4);
+    try std.testing.expect(selection.?.len == 5);
+    const old_size = app.doc.size();
+    try app.doc.caretBackspace();
+    try std.testing.expect(app.doc.size() == old_size - selection.?.len);
+}
+
+test "line selection and deletion works as expected" {
+    var app: App = .preinit;
+    try openWith(small_file, &app);
+    defer app.deinit();
+    try app.doc.moveTo(.{ .row = 0, .col = 6 });
+    try app.doc.selectLine();
+    const selection = app.doc.selectionSpan();
+    try std.testing.expect(selection != null);
+    try std.testing.expect(selection.?.start == 0);
+    try std.testing.expect(selection.?.len == 43);
+    const old_size = app.doc.size();
+    try app.doc.caretBackspace();
+    try std.testing.expect(app.doc.size() == old_size - selection.?.len);
+}
+
+test "move up from selection works as expected" {
+    var app: App = .preinit;
+    try openWith(small_file, &app);
+    defer app.deinit();
+    try app.doc.moveTo(.{ .row = 16, .col = 3 });
+    try app.doc.selectWord();
+    try app.doc.moveUp(true);
+    try std.testing.expect(app.doc.caret.pos.row == 15);
+    try std.testing.expect(app.doc.caret.pos.col == 0);
+}
+
+test "move down from selection works as expected" {
+    var app: App = .preinit;
+    try openWith(small_file, &app);
+    defer app.deinit();
+    try app.doc.moveTo(.{ .row = 16, .col = 3 });
+    try app.doc.selectWord();
+    try app.doc.moveDown(true);
+    try std.testing.expect(app.doc.caret.pos.row == 17);
+    try std.testing.expect(app.doc.caret.pos.col == 7);
+}
+
+test "move left from selection works as expected" {
+    var app: App = .preinit;
+    try openWith(small_file, &app);
+    defer app.deinit();
+    try app.doc.moveTo(.{ .row = 16, .col = 3 });
+    try app.doc.selectWord();
+    try app.doc.moveLeft(true);
+    try std.testing.expect(app.doc.caret.pos.row == 16);
+    try std.testing.expect(app.doc.caret.pos.col == 0);
+}
+
+test "move right from selection works as expected" {
+    var app: App = .preinit;
+    try openWith(small_file, &app);
+    defer app.deinit();
+    try app.doc.moveTo(.{ .row = 16, .col = 3 });
+    try app.doc.selectWord();
+    try app.doc.moveRight(true);
+    try std.testing.expect(app.doc.caret.pos.row == 16);
+    try std.testing.expect(app.doc.caret.pos.col == 7);
 }

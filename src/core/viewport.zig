@@ -14,6 +14,29 @@ pub const Viewport = struct {
     const overscroll: usize = 16;
     const caret_margin: usize = 8;
 
+    pub fn posNearEdge(self: *const Viewport, pos: Types.TextPos, max_line: usize, max_col: usize) bool {
+        if (self.dims.h == 0 or self.dims.w == 0) return false;
+        // visible edges
+        const bottom_edge = self.top_line + self.dims.h - 1;
+        const right_edge = self.left_col + self.dims.w - 1;
+        // Same band math as ensureCaretVisible
+        const top_band_end = self.top_line + caret_margin;
+        const bottom_band_start = bottom_edge - @min(caret_margin, bottom_edge);
+        const left_band_end = self.left_col + caret_margin;
+        const right_band_start = right_edge - @min(caret_margin, right_edge);
+        // is there room to scroll, including overscroll
+        const can_up = self.top_line > 0;
+        const can_down = self.top_line < self.maxTop(max_line);
+        const can_left = self.left_col > 0;
+        const can_right = self.left_col < self.maxLeft(max_col);
+        // Near an edge AND there is room to scroll in that direction
+        if (pos.row < top_band_end and can_up) return true;
+        if (pos.row > bottom_band_start and can_down) return true;
+        if (pos.col < left_band_end and can_left) return true;
+        if (pos.col > right_band_start and can_right) return true;
+        return false;
+    }
+
     pub fn ensureCaretVisible(self: *Viewport, caret: Types.TextPos, max_line: usize, max_col: usize) void {
         // adjust the viewport so the caret always remains visible
         if (self.dims.h == 0 or self.dims.w == 0) return;
@@ -22,7 +45,7 @@ pub const Viewport = struct {
             self.top_line = if (caret.row < caret_margin) 0 else caret.row - caret_margin;
         }
         // try to keep bottom some distance from caret
-        const bottom_edge = self.top_line + (self.dims.h - 1);
+        const bottom_edge = self.top_line + self.dims.h - 1;
         if (caret.row > bottom_edge - @min(caret_margin, bottom_edge)) {
             const base = caret.row + caret_margin + 1;
             const top = if (base <= self.dims.h) 0 else base - self.dims.h;
@@ -34,7 +57,7 @@ pub const Viewport = struct {
             self.left_col = if (caret.col < caret_margin) 0 else caret.col - caret_margin;
         }
         // try to keep right edge some distance from caret
-        const right_edge = self.left_col + (self.dims.w - 1);
+        const right_edge = self.left_col + self.dims.w - 1;
         if (caret.col > right_edge - @min(caret_margin, right_edge)) {
             const base = caret.col + caret_margin + 1;
             const left = if (base <= self.dims.w) 0 else base - self.dims.w;

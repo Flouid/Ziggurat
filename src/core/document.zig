@@ -121,19 +121,19 @@ pub const Document = struct {
     }
 
     pub fn deleteForward(self: *Document) error{OutOfMemory}!void {
-        try self.moveRight();
+        try self.moveRight(false);
         try self.caretBackspace();
     }
 
     pub fn deleteWordLeft(self: *Document) error{OutOfMemory}!void {
         self.startSelection();
-        try self.moveWordLeft();
+        try self.moveWordLeft(false);
         try self.caretBackspace();
     }
 
     pub fn deleteWordRight(self: *Document) error{OutOfMemory}!void {
         self.startSelection();
-        try self.moveWordRight();
+        try self.moveWordRight(false);
         try self.caretBackspace();
     }
 
@@ -146,7 +146,14 @@ pub const Document = struct {
         c.preferred_col = c.pos.col;
     }
 
-    pub fn moveLeft(self: *Document) error{OutOfMemory}!void {
+    pub fn moveLeft(self: *Document, cancel_select: bool) error{OutOfMemory}!void {
+        if (cancel_select) {
+            // a selection cancelling move left should just put the caret at the anchor position
+            debug.dassert(self.hasSelection(), "moveLeft: can only cancel selection if one exists");
+            self.caret = self.anchor.?;
+            self.resetSelection();
+            return;
+        }
         const c = &self.caret;
         if (c.byte == 0) return;
         c.byte -= 1;
@@ -158,7 +165,13 @@ pub const Document = struct {
         c.preferred_col = c.pos.col;
     }
 
-    pub fn moveRight(self: *Document) error{OutOfMemory}!void {
+    pub fn moveRight(self: *Document, cancel_select: bool) error{OutOfMemory}!void {
+        if (cancel_select) {
+            // a selection cancelling move right should just clear the selection without moving
+            debug.dassert(self.hasSelection(), "moveRight: can only cancel selection if one exists");
+            self.resetSelection();
+            return;
+        }
         const c = &self.caret;
         if (c.byte >= self.size()) return;
         const line_end = try self.lineEnd(c.pos.row);
@@ -173,14 +186,24 @@ pub const Document = struct {
         c.preferred_col = c.pos.col;
     }
 
-    pub fn moveHome(self: *Document) error{OutOfMemory}!void {
+    pub fn moveHome(self: *Document, cancel_select: bool) error{OutOfMemory}!void {
+        if (cancel_select) {
+            // a selection cancelling move home should just clear the selection before moving normally
+            debug.dassert(self.hasSelection(), "moveHome: can only cancel selection if one exists");
+            self.resetSelection();
+        }
         const c = &self.caret;
         c.byte = try self.lineStart(c.pos.row);
         c.pos.col = 0;
         c.preferred_col = 0;
     }
 
-    pub fn moveEnd(self: *Document) error{OutOfMemory}!void {
+    pub fn moveEnd(self: *Document, cancel_select: bool) error{OutOfMemory}!void {
+        if (cancel_select) {
+            // a selection cancelling move end should just clear the selection before moving normally
+            debug.dassert(self.hasSelection(), "moveEnd: can only cancel selection if one exists");
+            self.resetSelection();
+        }
         const c = &self.caret;
         const span = try self.lineSpan(c.pos.row);
         c.byte = span.start + span.len;
@@ -188,10 +211,16 @@ pub const Document = struct {
         c.preferred_col = c.pos.col;
     }
 
-    pub fn moveUp(self: *Document) error{OutOfMemory}!void {
+    pub fn moveUp(self: *Document, cancel_select: bool) error{OutOfMemory}!void {
+        if (cancel_select) {
+            // a selection cancelling move up should move up from the anchor
+            debug.dassert(self.hasSelection(), "moveUp: can only cancel selection if one exists");
+            self.caret = self.anchor.?;
+            self.resetSelection();
+        }
         const c = &self.caret;
         if (c.pos.row == 0) {
-            try self.moveHome();
+            try self.moveHome(false);
             return;
         }
         c.pos.row -= 1;
@@ -200,10 +229,15 @@ pub const Document = struct {
         c.byte = span.start + c.pos.col;
     }
 
-    pub fn moveDown(self: *Document) error{OutOfMemory}!void {
+    pub fn moveDown(self: *Document, cancel_select: bool) error{OutOfMemory}!void {
+        if (cancel_select) {
+            // a selection cancelling move down should move down from the caret
+            debug.dassert(self.hasSelection(), "moveDown: can only cancel selection if one exists");
+            self.resetSelection();
+        }
         const c = &self.caret;
         if (c.pos.row + 1 >= self.lineCount()) {
-            try self.moveEnd();
+            try self.moveEnd(false);
             return;
         }
         c.pos.row += 1;
@@ -212,7 +246,12 @@ pub const Document = struct {
         c.byte = span.start + c.pos.col;
     }
 
-    pub fn moveWordLeft(self: *Document) error{OutOfMemory}!void {
+    pub fn moveWordLeft(self: *Document, cancel_select: bool) error{OutOfMemory}!void {
+        if (cancel_select) {
+            // a selection cancelling move word left should behave normally
+            debug.dassert(self.hasSelection(), "moveWordLeft: can only cancel selection if one exists");
+            self.resetSelection();
+        }
         const c = &self.caret;
         const at = self.prevWordBoundary(c.byte);
         c.byte = at;
@@ -220,7 +259,12 @@ pub const Document = struct {
         c.preferred_col = c.pos.col;
     }
 
-    pub fn moveWordRight(self: *Document) error{OutOfMemory}!void {
+    pub fn moveWordRight(self: *Document, cancel_select: bool) error{OutOfMemory}!void {
+        if (cancel_select) {
+            // a selection cancelling move word right should behave normally
+            debug.dassert(self.hasSelection(), "moveWordRight: can only cancel selection if one exists");
+            self.resetSelection();
+        }
         const c = &self.caret;
         const at = self.nextWordBoundary(c.byte);
         c.byte = at;
@@ -257,6 +301,7 @@ pub const Document = struct {
         // move caret to word start, copy it as the anchor
         self.caret.byte = start;
         self.caret.pos = try self.byteToPos(start);
+        self.caret.preferred_col = self.caret.pos.col;
         self.anchor = self.caret;
         // move caret to word end
         self.caret.byte = end;
@@ -274,6 +319,7 @@ pub const Document = struct {
         // move caret to line start, copy it as the anchor
         self.caret.byte = span.start;
         self.caret.pos = try self.byteToPos(span.start);
+        self.caret.preferred_col = self.caret.pos.col;
         self.anchor = self.caret;
         // move caret to line end
         self.caret.byte = span.end();
@@ -285,6 +331,7 @@ pub const Document = struct {
         // move caret to document start
         self.caret.byte = 0;
         self.caret.pos = .{ .row = 0, .col = 0 };
+        self.caret.preferred_col = self.caret.pos.col;
         self.anchor = self.caret;
         // move caret to document end
         self.caret.byte = self.size();

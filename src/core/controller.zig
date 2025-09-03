@@ -111,12 +111,10 @@ pub const Controller = struct {
                 self.last_click_ms = now;
                 self.last_click_pos = .{ .x = x, .y = y };
                 // handle each case
-                const pos = try self.geom.mouseToTextPos(self.doc, self.vp, x, y);
-                if (pos == null) return .noop;
-                const p = pos.?;
                 switch (self.click_count) {
                     1 => {
-                        try self.doc.moveTo(p);
+                        const pos = try self.geom.mouseToTextPos(self.doc, self.vp, x, y) orelse return .noop;
+                        try self.doc.moveTo(pos);
                         self.doc.startSelection();
                     },
                     2 => try self.doc.selectWord(),
@@ -129,8 +127,8 @@ pub const Controller = struct {
             .MOUSE_MOVE => {
                 self.mouse_pos = .{ .x = ev.*.mouse_x, .y = ev.*.mouse_y };
                 if (!self.mouse_held) return .noop;
-                const pos = try self.geom.mouseToTextPos(self.doc, self.vp, ev.*.mouse_x, ev.*.mouse_y);
-                if (pos) |p| try self.doc.moveTo(p);
+                const pos = try self.geom.mouseToTextPos(self.doc, self.vp, ev.*.mouse_x, ev.*.mouse_y) orelse return .noop;
+                try self.doc.moveTo(pos);
             },
             .MOUSE_UP => {
                 self.mouse_held = false;
@@ -174,12 +172,11 @@ pub const Controller = struct {
 
     pub fn autoScroll(self: *const Controller) !bool {
         if (!self.doc.hasSelection() or !self.mouse_held) return false;
-        const pos = try self.geom.mouseToTextPos(self.doc, self.vp, self.mouse_pos.x, self.mouse_pos.y);
-        if (pos == null) return false;
-        const mp = pos.?;
-        const cp = self.doc.caret.pos;
-        if (mp.row == cp.row and mp.col == cp.col) return false;
-        try self.doc.moveTo(mp);
+        const mouse_pos = try self.geom.mouseToTextPos(self.doc, self.vp, self.mouse_pos.x, self.mouse_pos.y) orelse return false;
+        if (!self.vp.posNearEdge(mouse_pos, self.doc.lineCount(), self.doc.lineLength())) return false;
+        const caret_pos = self.doc.caret.pos;
+        if (mouse_pos.row == caret_pos.row and mouse_pos.col == caret_pos.col) return false;
+        try self.doc.moveTo(mouse_pos);
         return true;
     }
 };
@@ -201,8 +198,8 @@ fn modifiersOf(ev: [*c]const sapp.Event) Modifiers {
     };
 }
 
-fn traverseWithModifiers(doc: *Document, modifiers: Modifiers, comptime traverse: fn (*Document) error{OutOfMemory}!void) !void {
+fn traverseWithModifiers(doc: *Document, modifiers: Modifiers, comptime traverse: fn (*Document, bool) error{OutOfMemory}!void) !void {
     if (modifiers.shift and !doc.hasSelection()) doc.startSelection();
-    if (!modifiers.shift) doc.resetSelection();
-    try traverse(doc);
+    const cancel_selection = doc.hasSelection() and !modifiers.shift;
+    try traverse(doc, cancel_selection);
 }
