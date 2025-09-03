@@ -19,7 +19,7 @@ pub const Viewport = struct {
         // visible edges
         const bottom_edge = self.top_line + self.dims.h - 1;
         const right_edge = self.left_col + self.dims.w - 1;
-        // Same band math as ensureCaretVisible
+        // same band math as ensureCaretVisible
         const top_band_end = self.top_line + caret_margin;
         const bottom_band_start = bottom_edge - @min(caret_margin, bottom_edge);
         const left_band_end = self.left_col + caret_margin;
@@ -29,7 +29,7 @@ pub const Viewport = struct {
         const can_down = self.top_line < self.maxTop(max_line);
         const can_left = self.left_col > 0;
         const can_right = self.left_col < self.maxLeft(max_col);
-        // Near an edge AND there is room to scroll in that direction
+        // near an edge AND there is room to scroll in that direction
         if (pos.row < top_band_end and can_up) return true;
         if (pos.row > bottom_band_start and can_down) return true;
         if (pos.col < left_band_end and can_left) return true;
