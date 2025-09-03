@@ -59,15 +59,16 @@ pub const TextBuffer = struct {
         freeTree(self.alloc, self.root);
     }
 
-    pub fn reinit(self: *TextBuffer, new_original: []const u8, logical_idx: NewlineIndex) error { OutOfMemory, FileTooBig }!TextBuffer {
+    pub fn reinit(self: *TextBuffer, new_original: []const u8, logical_idx: NewlineIndex) error{ OutOfMemory, FileTooBig }!TextBuffer {
         // NOTE: when this is called, the original source buffer should be stale and any access is UB
         debug.dassert(self.doc_len == new_original.len, "new source buffer and logical document length must match");
         var new_buffer = try TextBuffer.init(self.alloc, new_original);
         errdefer new_buffer.deinit();
         new_buffer.o_idx = logical_idx;
-        new_buffer.scanned_bytes = self.scanned_bytes;
-        if (self.scanned_bytes > 0) {
-            const span: Span = .{ .start = 0, .len = self.scanned_bytes };
+        // scan may include portions of buffers which were subsequently deleted. These bytes can safely be discarded
+        new_buffer.scanned_bytes = @min(self.scanned_bytes, self.doc_len);
+        if (new_buffer.scanned_bytes > 0) {
+            const span: Span = .{ .start = 0, .len = new_buffer.scanned_bytes };
             new_buffer.root.weight_lines = try new_buffer.o_idx.countRange(self.alloc, new_original, span);
         }
         new_buffer.retargetFrontier();
@@ -305,13 +306,14 @@ pub const TextBuffer = struct {
 
     pub fn buildLogicalIndex(self: *TextBuffer) error{OutOfMemory}!NewlineIndex {
         var out: NewlineIndex = .empty;
-        if (self.scanned_bytes == 0) return out;
+        const len = @min(self.scanned_bytes, self.doc_len);
+        if (len == 0) return out;
         // only index up to the amount of bytes previously scanned. No extra work
-        try out.ensureCapacityForLen(self.alloc, self.scanned_bytes);
+        try out.ensureCapacityForLen(self.alloc, len);
         var prefix: usize = 0;
         var doc_idx: usize = 0;
         var page_idx: usize = 0;
-        const last_page = (self.scanned_bytes - 1) / PAGE_SIZE;
+        const last_page = (len - 1) / PAGE_SIZE;
         // walk leaves left to right...
         var leaf: ?*Node = leftmostDescendant(self.root);
         while (leaf != null and page_idx <= last_page) {
@@ -330,13 +332,13 @@ pub const TextBuffer = struct {
                     .add => {
                         src = self.add.items;
                         idx = &self.a_idx;
-                    }
+                    },
                 }
                 var remaining = piece.len();
                 var src_offset = piece.off;
                 // walk each page in the piece and count lines into combined index
                 while (remaining > 0 and page_idx <= last_page) {
-                    const page_end = @min(((doc_idx / PAGE_SIZE) + 1) * PAGE_SIZE, self.scanned_bytes);
+                    const page_end = @min(((doc_idx / PAGE_SIZE) + 1) * PAGE_SIZE, len);
                     const take = @min(remaining, page_end - doc_idx);
                     const span: Span = .{ .start = src_offset, .len = take };
                     const newlines = try idx.countRange(self.alloc, src, span);
