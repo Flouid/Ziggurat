@@ -59,17 +59,19 @@ pub const TextBuffer = struct {
         freeTree(self.alloc, self.root);
     }
 
-    pub fn reinit(self: *TextBuffer, new_original: []const u8) error { OutOfMemory, FileTooBig }!TextBuffer {
+    pub fn reinit(self: *TextBuffer, new_original: []const u8, logical_idx: NewlineIndex) error { OutOfMemory, FileTooBig }!TextBuffer {
+        // NOTE: when this is called, the original source buffer should be stale and any access is UB
         debug.dassert(self.doc_len == new_original.len, "new source buffer and logical document length must match");
         var new_buffer = try TextBuffer.init(self.alloc, new_original);
-        new_buffer.o_idx = try self.buildLogicalIndex();
+        errdefer new_buffer.deinit();
+        new_buffer.o_idx = logical_idx;
         new_buffer.scanned_bytes = self.scanned_bytes;
         if (self.scanned_bytes > 0) {
             const span: Span = .{ .start = 0, .len = self.scanned_bytes };
             new_buffer.root.weight_lines = try new_buffer.o_idx.countRange(self.alloc, new_original, span);
         }
         new_buffer.retargetFrontier();
-        defer self.deinit();
+        self.deinit();
         return new_buffer;
     }
 
@@ -299,6 +301,59 @@ pub const TextBuffer = struct {
         debug.dassert(span.end() <= self.doc_len, "view out of bounds");
         debug.dassert(span.len > 0, "cannot provide an empty view");
         return SliceIter.init(self, span);
+    }
+
+    pub fn buildLogicalIndex(self: *TextBuffer) error{OutOfMemory}!NewlineIndex {
+        var out: NewlineIndex = .empty;
+        if (self.scanned_bytes == 0) return out;
+        // only index up to the amount of bytes previously scanned. No extra work
+        try out.ensureCapacityForLen(self.alloc, self.scanned_bytes);
+        var prefix: usize = 0;
+        var doc_idx: usize = 0;
+        var page_idx: usize = 0;
+        const last_page = (self.scanned_bytes - 1) / PAGE_SIZE;
+        // walk leaves left to right...
+        var leaf: ?*Node = leftmostDescendant(self.root);
+        while (leaf != null and page_idx <= last_page) {
+            const pieces = leafPiecesConst(leaf.?).items;
+            var i: usize = 0;
+            // walk each piece in the leaf...
+            while (i < pieces.len and page_idx <= last_page) : (i += 1) {
+                const piece = pieces[i];
+                var src: []const u8 = undefined;
+                var idx: *NewlineIndex = undefined;
+                switch (piece.buf()) {
+                    .original => {
+                        src = self.original;
+                        idx = &self.o_idx;
+                    },
+                    .add => {
+                        src = self.add.items;
+                        idx = &self.a_idx;
+                    }
+                }
+                var remaining = piece.len();
+                var src_offset = piece.off;
+                // walk each page in the piece and count lines into combined index
+                while (remaining > 0 and page_idx <= last_page) {
+                    const page_end = @min(((doc_idx / PAGE_SIZE) + 1) * PAGE_SIZE, self.scanned_bytes);
+                    const take = @min(remaining, page_end - doc_idx);
+                    const span: Span = .{ .start = src_offset, .len = take };
+                    const newlines = try idx.countRange(self.alloc, src, span);
+                    prefix += newlines;
+                    doc_idx += take;
+                    src_offset += take;
+                    remaining -= take;
+                    if (doc_idx == page_end) {
+                        out.prefix.items[page_idx] = prefix;
+                        out.done.items[page_idx] = true;
+                        page_idx += 1;
+                    }
+                }
+            }
+            leaf = nextLeaf(leaf.?);
+        }
+        return out;
     }
 
     // -------------------- EVERYTHING BENEATH THIS LINE IS A PRIVATE IMPLEMENTATION DETAIL --------------------
@@ -670,59 +725,6 @@ pub const TextBuffer = struct {
             .piece_idx = loc.piece_idx,
             .offset = loc.offset,
         };
-    }
-
-    fn buildLogicalIndex(self: *TextBuffer) error{OutOfMemory}!NewlineIndex {
-        var out: NewlineIndex = .empty;
-        if (self.scanned_bytes == 0) return out;
-        // only index up to the amount of bytes previously scanned. No extra work
-        try out.ensureCapacityForLen(self.alloc, self.scanned_bytes);
-        var prefix: usize = 0;
-        var doc_idx: usize = 0;
-        var page_idx: usize = 0;
-        const last_page = (self.scanned_bytes - 1) / PAGE_SIZE;
-        // walk leaves left to right...
-        var leaf: ?*Node = leftmostDescendant(self.root);
-        while (leaf != null and page_idx <= last_page) {
-            const pieces = leafPiecesConst(leaf.?).items;
-            var i: usize = 0;
-            // walk each piece in the leaf...
-            while (i < pieces.len and page_idx <= last_page) : (i += 1) {
-                const piece = pieces[i];
-                var src: []const u8 = undefined;
-                var idx: *NewlineIndex = undefined;
-                switch (piece.buf()) {
-                    .original => {
-                        src = self.original;
-                        idx = &self.o_idx;
-                    },
-                    .add => {
-                        src = self.add.items;
-                        idx = &self.a_idx;
-                    }
-                }
-                var remaining = piece.len();
-                var src_offset = piece.off;
-                // walk each page in the piece and count lines into combined index
-                while (remaining > 0 and page_idx <= last_page) {
-                    const page_end = @min(((doc_idx / PAGE_SIZE) + 1) * PAGE_SIZE, self.scanned_bytes);
-                    const take = @min(remaining, page_end - doc_idx);
-                    const span: Span = .{ .start = src_offset, .len = take };
-                    const newlines = try idx.countRange(self.alloc, src, span);
-                    prefix += newlines;
-                    doc_idx += take;
-                    src_offset += take;
-                    remaining -= take;
-                    if (doc_idx == page_end) {
-                        out.prefix.items[page_idx] = prefix;
-                        out.done.items[page_idx] = true;
-                        page_idx += 1;
-                    }
-                }
-            }
-            leaf = nextLeaf(leaf.?);
-        }
-        return out;
     }
 };
 
