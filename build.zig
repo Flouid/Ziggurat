@@ -93,7 +93,7 @@ fn addCoreModules(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std
     });
 
     const viewport_mod = b.addModule("viewport", .{
-        .root_source_file = b.path("src/core/viewport.zig"),
+        .root_source_file = b.path("src/ui/viewport.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{.{ .name = "types", .module = types_mod }},
@@ -111,7 +111,7 @@ fn addCoreModules(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std
     });
 
     const layout_mod = b.addModule("layout", .{
-        .root_source_file = b.path("src/core/layout.zig"),
+        .root_source_file = b.path("src/ui/layout.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
@@ -128,7 +128,7 @@ fn addCoreModules(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std
     });
 
     const renderer_mod = b.addModule("renderer", .{
-        .root_source_file = b.path("src/core/renderer.zig"),
+        .root_source_file = b.path("src/ui/renderer.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
@@ -144,7 +144,7 @@ fn addCoreModules(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std
     const dep_win32 = b.dependency("win32", .{});
 
     const file_io_mod = b.addModule("file_io", .{
-        .root_source_file = b.path("src/core/file_io.zig"),
+        .root_source_file = b.path("src/utils/file_io.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
@@ -153,7 +153,7 @@ fn addCoreModules(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std
     });
 
     const controller_mod = b.addModule("controller", .{
-        .root_source_file = b.path("src/core/controller.zig"),
+        .root_source_file = b.path("src/app/controller.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
