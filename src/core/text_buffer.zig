@@ -108,6 +108,7 @@ pub const TextBuffer = struct {
     pub fn reset(self: *TextBuffer) error{OutOfMemory}!void {
         freeTree(self.alloc, self.root);
         self.root = try initLeaf(self.alloc);
+        self.doc_len = 0;
         self.scanned_bytes = 0;
         self.retargetFrontier();
     }
