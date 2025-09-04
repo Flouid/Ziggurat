@@ -95,7 +95,7 @@ pub const TextBuffer = struct {
             const idx = try spliceIntoLeaf(pieces, self.alloc, loc, span);
             mergeAround(leaf, idx);
         }
-        bubbleDelta(leaf, .{ .bytes = text.len, .lines = newlines}, false);
+        bubbleDelta(leaf, .{ .bytes = text.len, .lines = newlines }, false);
         self.doc_len += text.len;
         // if the number of pieces changed, there are cases where underflow AND overflow are possible
         if (!fast_path) {
@@ -172,7 +172,7 @@ pub const TextBuffer = struct {
             const newlines = try self.countLinesInPieceRange(piece, self.frontier.offset, page_end - start);
             self.frontier.offset += span.len;
             self.scanned_bytes += span.len;
-            bubbleDelta(leaf, .{ .bytes = 0, .lines = newlines}, false);
+            bubbleDelta(leaf, .{ .bytes = 0, .lines = newlines }, false);
             if (self.frontier.offset == piece.len()) {
                 self.frontier.piece_idx += 1;
                 self.frontier.offset = 0;
