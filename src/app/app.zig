@@ -35,26 +35,18 @@ const App = struct {
 
     fn initCore(self: *App) !void {
         const gpa = self.gpa.allocator();
-        // initialize geometry
         self.geom = .{ .cell_h_px = 8.0, .cell_w_px = 8.0, .pad_x_cells = 0.5, .pad_y_cells = 0.5 };
-        // initialize document
         self.mmap = try file_io.MappedFile.initFromPath(self.path_in);
         self.doc = try Document.init(gpa, self.mmap.bytes);
-        // initialize viewport
         self.vp = .{ .top_line = 0, .left_col = 0, .dims = self.getScreenDims() };
-        // initialize controller
         self.controller = .{ .doc = &self.doc, .vp = &self.vp, .geom = &self.geom };
-        // initialize arena for rendering each frame
         self.arena = std.heap.ArenaAllocator.init(gpa);
-        // cache initial layout on open
         try self.refreshLayout();
-        // initialize caret blink timer
         self.last_tick_ns = @intCast(std.time.nanoTimestamp());
     }
 
     fn initGraphics(self: *App) void {
         self.headless = false;
-        // initialize renderer
         self.renderer = Renderer.init(self.gpa.allocator(), .{}, self.geom);
     }
 
