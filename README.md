@@ -32,11 +32,10 @@ Two programs:
 
 Each of these is being addressed on the way to v1. 
 
-- No clipboard support
 - No undo/redo
 - No file renaming
 - No scaling or font support
 - No text wrapping
 - ASCII only, for now
 
-![alt text](Ziggurat_oT07f5zXut.gif)
+![alt text](blinking.gif)
