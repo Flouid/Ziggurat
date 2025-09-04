@@ -353,10 +353,14 @@ pub const Document = struct {
 
     pub fn lineSpan(self: *Document, line: usize) error{OutOfMemory}!Span {
         const start = try self.lineStart(line);
-        const end = try self.lineEnd(line);
+        var end = try self.lineEnd(line);
         debug.dassert(end >= start, "line cannot have negative length");
-        // subtracts newline for all lines except the last (no newline) and empty lines (0 length)
-        const len = if (start < end and line + 1 < self.lineCount()) end - start - 1 else end - start;
+        // subtracts any newline characters from the end
+        while (end > start) : (end -= 1) {
+            const b = self.buffer.peek(end - 1);
+            if (b != '\n' and b != '\r') break;
+        }
+        const len = end - start;
         if (len > self.max_cols) self.max_cols = len;
         return .{ .start = start, .len = len };
     }
