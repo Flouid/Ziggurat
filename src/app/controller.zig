@@ -14,6 +14,9 @@ pub const Command = union(enum) {
     save,
     exit,
     edit,
+    cut,
+    copy,
+    paste,
     resize,
     noop,
 };
@@ -44,11 +47,22 @@ pub const Controller = struct {
             .KEY_DOWN => {
                 const key = ev.*.key_code;
                 const modifiers = modifiersOf(ev);
-                // ctrl-s to save
-                if (modifiers.ctrl and key == .S) return .save;
-                // ctrl-d to exit
-                if (modifiers.ctrl and key == .D) return .exit;
-
+                // handle ctrl+key shortcuts
+                if (modifiers.ctrl) {
+                    switch (key) {
+                        .S => return .save,
+                        .D => return .exit,
+                        .X => return .cut,
+                        .C => return .copy,
+                        .V => return .paste,
+                        .A => {
+                            try self.doc.selectDocument();
+                            return .edit;
+                        },
+                        else => {},
+                    }
+                }
+                // handle generic key presses
                 switch (key) {
                     .RIGHT => {
                         if (modifiers.ctrl) {

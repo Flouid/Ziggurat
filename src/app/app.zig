@@ -163,6 +163,9 @@ fn event_cb(ev: [*c]const sapp.Event) callconv(.c) void {
             std.log.err("failed to save document: {t}\n", .{e});
         },
         .exit => sapp.requestQuit(),
+        .cut => {},
+        .copy => {},
+        .paste => {},
         .resize => G.vp.resize(G.getScreenDims()),
         .noop => return,
         else => {},
