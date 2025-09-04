@@ -102,7 +102,7 @@ pub const TextBuffer = struct {
         // given that the contract is inserts should always occur inside the scanned region, this should ALWAYS be true
         debug.dassert(at <= self.scanned_bytes, "insert outside of scanned region of buffer");
         self.scanned_bytes += text.len;
-        if (self.scanned_bytes < self.doc_len) self.retargetFrontier();
+        self.retargetFrontier();
     }
 
     pub fn reset(self: *TextBuffer) error{OutOfMemory}!void {
@@ -148,7 +148,7 @@ pub const TextBuffer = struct {
         // given that the contract is deletes should always occur inside the scanned region, this should ALWAYS be true
         debug.dassert(span.end() <= self.scanned_bytes, "delete outside of scanned region of buffer");
         self.scanned_bytes -= span.len;
-        if (self.scanned_bytes < self.doc_len) self.retargetFrontier();
+        self.retargetFrontier();
     }
 
     pub fn scanFrontierUntil(self: *TextBuffer, line: usize) error{OutOfMemory}!bool {
