@@ -165,6 +165,8 @@ fn addCoreModules(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std
         },
     });
 
+    const dep_clipboard = b.dependency("clipboard", .{});
+
     const app_mod = b.addModule("app", .{
         .root_source_file = b.path("src/app/app.zig"),
         .target = target,
@@ -179,6 +181,7 @@ fn addCoreModules(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std
             .{ .name = "controller", .module = controller_mod },
             .{ .name = "geometry", .module = geom_mod },
             .{ .name = "types", .module = types_mod },
+            .{ .name = "clipboard", .module = dep_clipboard.module("clipboard") },
         },
     });
 
