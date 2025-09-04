@@ -39,7 +39,7 @@ const App = struct {
         self.mmap = try file_io.MappedFile.initFromPath(self.path_in);
         self.doc = try Document.init(gpa, self.mmap.bytes);
         self.vp = .{ .top_line = 0, .left_col = 0, .dims = self.getScreenDims() };
-        self.controller = .{ .doc = &self.doc, .vp = &self.vp, .geom = &self.geom };
+        self.controller = .{ .doc = &self.doc, .vp = &self.vp, .geom = &self.geom, .alloc = gpa };
         self.arena = std.heap.ArenaAllocator.init(gpa);
         try self.refreshLayout();
         self.last_tick_ns = @intCast(std.time.nanoTimestamp());

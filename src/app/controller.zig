@@ -6,6 +6,7 @@ const Viewport = @import("viewport").Viewport;
 const Geometry = @import("geometry").Geometry;
 const PixelPos = @import("types").PixelPos;
 const TextPos = @import("types").TextPos;
+const Span = @import("types").Span;
 
 const Y_SCROLL = 2;
 const X_SCROLL = 2;
@@ -23,6 +24,7 @@ pub const Controller = struct {
     doc: *Document,
     vp: *Viewport,
     geom: *Geometry,
+    alloc: std.mem.Allocator,
     // mouse click tracking
     mouse_held: bool = false,
     click_count: u8 = 0,
@@ -51,12 +53,12 @@ pub const Controller = struct {
                         .S => return .save,
                         .D => return .exit,
                         .X => {
-                            try copySelectionToClipboard(self.doc);
+                            try self.copySelectionToClipboard();
                             try self.doc.caretBackspace();
                             return .refresh;
                         },
                         .C => {
-                            try copySelectionToClipboard(self.doc);
+                            try self.copySelectionToClipboard();
                             return .handled;
                         },
                         .V => {
@@ -207,6 +209,21 @@ pub const Controller = struct {
         try self.doc.moveTo(mouse_pos);
         return true;
     }
+
+    fn buildSlice(self: *const Controller, span: Span) ![]const u8 {
+        const slice = try self.alloc.alloc(u8, span.len);
+        var w: std.Io.Writer = .fixed(slice);
+        try self.doc.materializeRange(&w, span);
+        try w.flush();
+        return slice;
+    }
+
+    fn copySelectionToClipboard(self: *const Controller) !void {
+        const span = self.doc.selectionSpan() orelse return;
+        const slice = try self.buildSlice(span);
+        defer self.alloc.free(slice);
+        try clipboard.write(slice);
+    }
 };
 
 const Modifiers = packed struct {
@@ -230,14 +247,4 @@ fn moveWithModifiers(doc: *Document, modifiers: Modifiers, comptime move: fn (*D
     if (modifiers.shift and !doc.hasSelection()) doc.startSelection();
     const cancel_selection = doc.hasSelection() and !modifiers.shift;
     try move(doc, cancel_selection);
-}
-
-fn copySelectionToClipboard(doc: *Document) !void {
-    const span = doc.selectionSpan() orelse return;
-    const buf = try doc.alloc.alloc(u8, span.len);
-    defer doc.alloc.free(buf);
-    var w: std.Io.Writer = .fixed(buf);
-    try doc.materializeRange(&w, span);
-    try w.flush();
-    try clipboard.write(buf);
 }
