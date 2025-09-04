@@ -1,7 +1,6 @@
 const std = @import("std");
 const sapp = @import("sokol").app;
 const file_io = @import("file_io");
-const clipboard = @import("clipboard");
 const Document = @import("document").Document;
 const Viewport = @import("viewport").Viewport;
 const Layout = @import("layout").Layout;
@@ -129,17 +128,6 @@ const App = struct {
             return self.geom.pixelDimsToScreenDims(.{ .w = @floatFromInt(sapp.width()), .h = @floatFromInt(sapp.height()) });
         } else return self.geom.pixelDimsToScreenDims(.{ .w = 1024.0, .h = 768.0 });
     }
-
-    fn copySelectionToClipboard(self: *App) !void {
-        const a = self.gpa.allocator();
-        const span = self.doc.selectionSpan() orelse return;
-        const buf = try a.alloc(u8, span.len);
-        defer a.free(buf);
-        var w: std.Io.Writer = .fixed(buf);
-        try self.doc.materializeRange(&w, span);
-        try w.flush();
-        try clipboard.write(buf);
-    }
 };
 
 // GLOBAL app instance, sokol wants this
@@ -177,17 +165,8 @@ fn event_cb(ev: [*c]const sapp.Event) callconv(.c) void {
             std.log.err("failed to save document: {t}\n", .{e});
         },
         .exit => sapp.requestQuit(),
-        .cut => {
-            G.copySelectionToClipboard() catch unreachable;
-            G.doc.caretBackspace() catch unreachable;
-        },
-        .copy => G.copySelectionToClipboard() catch unreachable,
-        .paste => {
-            const buf = clipboard.read() catch unreachable;
-            G.doc.caretInsert(buf) catch unreachable;
-        },
         .resize => G.vp.resize(G.getScreenDims()),
-        .noop => return,
+        .handled => return,
         else => {},
     }
     // if here, the command was NOT a noop, refresh the cached layout on next frame

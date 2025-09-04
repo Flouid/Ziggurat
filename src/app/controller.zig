@@ -1,5 +1,6 @@
 const std = @import("std");
 const sapp = @import("sokol").app;
+const clipboard = @import("clipboard");
 const Document = @import("document").Document;
 const Viewport = @import("viewport").Viewport;
 const Geometry = @import("geometry").Geometry;
@@ -13,12 +14,9 @@ const REVERSE_DIR = true;
 pub const Command = union(enum) {
     save,
     exit,
-    edit,
-    cut,
-    copy,
-    paste,
+    refresh,
     resize,
-    noop,
+    handled,
 };
 
 pub const Controller = struct {
@@ -41,8 +39,8 @@ pub const Controller = struct {
         // this has a very specific contract which is important to understand.
         // If the controller determines some action is requested which it cannot handle (save/exit/etc),
         // then it will return that action as a command for the app to deal with.
-        // If the event is unsupported or doesn't require re-render, it returns a .noop command
-        // If the event was supported and handled, it returns .edit (trigger re-render).
+        // If the event can be handled and does not change the visible state, return .handled.
+        // If the event was handled but mutated visible state, trigger a refresh with .refresh.
         switch (ev.*.type) {
             .KEY_DOWN => {
                 const key = ev.*.key_code;
@@ -52,12 +50,23 @@ pub const Controller = struct {
                     switch (key) {
                         .S => return .save,
                         .D => return .exit,
-                        .X => return .cut,
-                        .C => return .copy,
-                        .V => return .paste,
+                        .X => {
+                            try copySelectionToClipboard(self.doc);
+                            try self.doc.caretBackspace();
+                            return .refresh;
+                        },
+                        .C => {
+                            try copySelectionToClipboard(self.doc);
+                            return .handled;
+                        },
+                        .V => {
+                            const buf = try clipboard.read();
+                            try self.doc.caretInsert(buf);
+                            return .refresh;
+                        },
                         .A => {
                             try self.doc.selectDocument();
-                            return .edit;
+                            return .refresh;
                         },
                         else => {},
                     }
@@ -93,15 +102,15 @@ pub const Controller = struct {
                     .ESCAPE => {
                         if (self.doc.hasSelection()) {
                             self.doc.resetSelection();
-                            return .edit;
-                        } else return .noop;
+                            return .refresh;
+                        } else return .handled;
                     },
-                    else => return .noop,
+                    else => return .handled,
                 }
             },
             .CHAR => {
                 const modifiers = modifiersOf(ev);
-                if (modifiers.ctrl or modifiers.alt or modifiers.super) return .noop;
+                if (modifiers.ctrl or modifiers.alt or modifiers.super) return .handled;
                 var buf: [4]u8 = undefined;
                 const len = try std.unicode.utf8Encode(@intCast(ev.*.char_code), &buf);
                 try self.doc.caretInsert(buf[0..len]);
@@ -126,7 +135,7 @@ pub const Controller = struct {
                 }
                 self.last_click_ms = now;
                 self.last_click_pixel_pos = .{ .x = x, .y = y };
-                const pos = try self.geom.mouseToTextPos(self.doc, self.vp, x, y) orelse return .noop;
+                const pos = try self.geom.mouseToTextPos(self.doc, self.vp, x, y) orelse return .handled;
                 self.last_click_text_pos = pos;
                 // handle each case
                 switch (self.click_count) {
@@ -139,23 +148,23 @@ pub const Controller = struct {
                     4 => try self.doc.selectDocument(),
                     else => {},
                 }
-                return .edit;
+                return .refresh;
             },
             .MOUSE_MOVE => {
                 self.mouse_pos = .{ .x = ev.*.mouse_x, .y = ev.*.mouse_y };
-                if (!self.mouse_held) return .noop;
-                const pos = try self.geom.mouseToTextPos(self.doc, self.vp, ev.*.mouse_x, ev.*.mouse_y) orelse return .noop;
+                if (!self.mouse_held) return .handled;
+                const pos = try self.geom.mouseToTextPos(self.doc, self.vp, ev.*.mouse_x, ev.*.mouse_y) orelse return .handled;
                 const not_last_click_pos = pos.row != self.last_click_text_pos.row or pos.col != self.last_click_text_pos.col;
                 if (!self.doc.hasSelection() and not_last_click_pos) self.doc.startSelection();
                 try self.doc.moveTo(pos);
             },
             .MOUSE_UP => {
                 self.mouse_held = false;
-                return .noop;
+                return .handled;
             },
             .MOUSE_ENTER => {
                 sapp.setMouseCursor(.IBEAM);
-                return .noop;
+                return .handled;
             },
             .MOUSE_SCROLL => {
                 const modifiers = modifiersOf(ev);
@@ -175,18 +184,18 @@ pub const Controller = struct {
                 const d_cols: isize = @intFromFloat(dx * X_SCROLL);
                 const n_lines = self.doc.lineCount();
                 const n_cols = self.doc.lineLength();
-                if (!self.vp.scrollBy(d_lines, d_cols, n_lines, n_cols)) return .noop;
-                return .edit;
+                if (!self.vp.scrollBy(d_lines, d_cols, n_lines, n_cols)) return .handled;
+                return .refresh;
             },
             .RESIZED => return .resize,
-            else => return .noop,
+            else => return .handled,
         }
         // unless skipped via early return, ensure the caret is visible
         const caret_pos = self.doc.caret.pos;
         const n_lines = self.doc.lineCount();
         const n_cols = self.doc.lineLength();
         self.vp.ensureCaretVisible(caret_pos, n_lines, n_cols);
-        return .edit;
+        return .refresh;
     }
 
     pub fn autoScroll(self: *const Controller) !bool {
@@ -221,4 +230,14 @@ fn moveWithModifiers(doc: *Document, modifiers: Modifiers, comptime move: fn (*D
     if (modifiers.shift and !doc.hasSelection()) doc.startSelection();
     const cancel_selection = doc.hasSelection() and !modifiers.shift;
     try move(doc, cancel_selection);
+}
+
+fn copySelectionToClipboard(doc: *Document) !void {
+    const span = doc.selectionSpan() orelse return;
+    const buf = try doc.alloc.alloc(u8, span.len);
+    defer doc.alloc.free(buf);
+    var w: std.Io.Writer = .fixed(buf);
+    try doc.materializeRange(&w, span);
+    try w.flush();
+    try clipboard.write(buf);
 }
