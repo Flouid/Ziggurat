@@ -95,8 +95,7 @@ pub const TextBuffer = struct {
             const idx = try spliceIntoLeaf(pieces, self.alloc, loc, span);
             mergeAround(leaf, idx);
         }
-        bubbleByteDelta(leaf, text.len, false);
-        bubbleLineDelta(leaf, newlines, false);
+        bubbleDelta(leaf, .{ .bytes = text.len, .lines = newlines}, false);
         self.doc_len += text.len;
         // if the number of pieces changed, there are cases where underflow AND overflow are possible
         if (!fast_path) {
@@ -134,8 +133,7 @@ pub const TextBuffer = struct {
         while (remaining > 0) {
             const in_leaf = locateInLeaf(leaf, offset);
             const removed = try self.deleteFromLeaf(leaf, in_leaf, remaining);
-            bubbleByteDelta(leaf, removed.bytes, true);
-            bubbleLineDelta(leaf, removed.lines, true);
+            bubbleDelta(leaf, removed, true);
             remaining -= removed.bytes;
             offset = 0;
             const next_leaf = nextLeaf(leaf);
@@ -174,7 +172,7 @@ pub const TextBuffer = struct {
             const newlines = try self.countLinesInPieceRange(piece, self.frontier.offset, page_end - start);
             self.frontier.offset += span.len;
             self.scanned_bytes += span.len;
-            bubbleLineDelta(leaf, newlines, false);
+            bubbleDelta(leaf, .{ .bytes = 0, .lines = newlines}, false);
             if (self.frontier.offset == piece.len()) {
                 self.frontier.piece_idx += 1;
                 self.frontier.offset = 0;
@@ -370,11 +368,7 @@ pub const TextBuffer = struct {
         // It's possible that a node split overflows it's parent, which splits and overflows IT'S parent...
         // Thus the logic needs to "bubble up" from the bottom of the tree until splits stop happening
         var cur: ?*Node = start;
-        while (cur) |n| {
-            const parent = try self.splitNodeIfOverflow(n);
-            if (parent == null) return;
-            cur = parent;
-        }
+        while (cur) |n| : (cur = try self.splitNodeIfOverflow(n)) {}
     }
 
     fn splitNodeIfOverflow(self: *TextBuffer, node: *Node) error{OutOfMemory}!?*Node {
@@ -453,9 +447,7 @@ pub const TextBuffer = struct {
 
     // -------------------- DELETE HELPERS --------------------
 
-    const DeleteResult = struct { bytes: usize, lines: usize };
-
-    fn deleteFromLeaf(self: *TextBuffer, leaf: *Node, start: InLeaf, max_remove: usize) error{OutOfMemory}!DeleteResult {
+    fn deleteFromLeaf(self: *TextBuffer, leaf: *Node, start: InLeaf, max_remove: usize) error{OutOfMemory}!Delta {
         // attempt to delete at most max_remove bytes from the current leaf.
         // return the total number that could be deleted, deletion may go into another node.
         var pieces = leafPieces(leaf);
@@ -511,7 +503,7 @@ pub const TextBuffer = struct {
             removed_bytes += take;
         }
         // if there are still pieces left, perform a local coalesce before returning
-        const removed = DeleteResult{ .bytes = removed_bytes, .lines = removed_lines };
+        const removed: Delta = .{ .bytes = removed_bytes, .lines = removed_lines };
         if (pieces.items.len == 0) return removed;
         if (piece_idx == pieces.items.len) piece_idx -= 1;
         mergeAround(leaf, piece_idx);
@@ -544,10 +536,8 @@ pub const TextBuffer = struct {
                     .back => dst_pieces.items.len - count,
                 };
                 mergeAround(dst, center);
-                bubbleByteDelta(src, moved.bytes, true);
-                bubbleByteDelta(dst, moved.bytes, false);
-                bubbleLineDelta(src, moved.lines, true);
-                bubbleLineDelta(dst, moved.lines, false);
+                bubbleDelta(src, moved, true);
+                bubbleDelta(dst, moved, false);
             },
             .internal => {
                 const src_children = childList(src);
@@ -568,28 +558,10 @@ pub const TextBuffer = struct {
                     .back => dst_children.items[dst_children.items.len - count ..],
                 };
                 for (adopted) |child| child.parent = dst;
-                bubbleByteDelta(src, moved.bytes, true);
-                bubbleByteDelta(dst, moved.bytes, false);
-                bubbleLineDelta(src, moved.lines, true);
-                bubbleLineDelta(dst, moved.lines, false);
+                bubbleDelta(src, moved, true);
+                bubbleDelta(dst, moved, false);
             },
         }
-    }
-
-    fn tryBorrow(self: *TextBuffer, node: *Node, siblings: Siblings) error{OutOfMemory}!usize {
-        // uses a borrow plan to take exactly as many nodes from neighbors as can be spared
-        const plan = planBorrow(node, siblings);
-        if (siblings.l) |left| {
-            if (plan.take_left > 0) {
-                try self.transferRangeBetweenSiblings(left, node, nodeCount(left) - plan.take_left, plan.take_left, .front);
-            }
-        }
-        if (siblings.r) |right| {
-            if (plan.take_right > 0) {
-                try self.transferRangeBetweenSiblings(right, node, 0, plan.take_right, .back);
-            }
-        }
-        return plan.take_left + plan.take_right;
     }
 
     fn repairAfterDelete(self: *TextBuffer, left: *Node, right: *Node) error{OutOfMemory}!void {
@@ -619,38 +591,37 @@ pub const TextBuffer = struct {
         var cur: ?*Node = start;
         while (cur) |node| {
             if (node.parent == null) return;
+            defer cur = node.parent;
             // make next decisions based on how many children this node has
             const count = nodeCount(node);
             const min = nodeMin(node);
             if (count == 0) {
                 const parent = node.parent.?;
                 self.infanticide(parent, node);
-                cur = parent;
             } else if (count < min) {
-                // the node has less than the minimum amount of children...
-                const demand = min - count;
                 const siblings = getSiblings(node);
                 // attempt to merge with neighbors
-                if (siblings.l) |left| {
-                    if (try self.mergeWithSibling(node, left)) |parent| {
-                        cur = parent;
-                        continue;
-                    }
-                }
-                if (siblings.r) |right| {
-                    if (try self.mergeWithSibling(right, node)) |parent| {
-                        cur = parent;
-                        continue;
-                    }
-                }
+                if (siblings.l != null and try self.mergeWithSibling(node, siblings.l.?)) continue;
+                if (siblings.r != null and try self.mergeWithSibling(node, siblings.r.?)) continue;
                 // failing that, try and borrow children
-                const borrowed = try self.tryBorrow(node, siblings);
-                if (borrowed >= demand) {
-                    cur = node.parent;
-                    continue;
-                }
+                const max = nodeMax(node);
+                const demand = min - count;
+                const capacity = max - count;
+                const left_spare = if (siblings.l) |l| spareNodes(l) else 0;
+                const right_spare = if (siblings.r) |r| spareNodes(r) else 0;
+                // merge on new boundaries after borrowing might delete up to one piece per borrow
+                var slack: usize = 0;
+                const is_leaf = isLeaf(node);
+                if (is_leaf and siblings.l != null) slack += 1;
+                if (is_leaf and siblings.r != null) slack += 1;
+                var total_want = @min(demand + slack, capacity);
+                // preferentially borrow from the right sibling, it's faster
+                const take_right = @min(total_want, right_spare);
+                total_want -= take_right;
+                const take_left = @min(total_want, left_spare);
+                if (siblings.l != null and take_left > 0) try self.transferRangeBetweenSiblings(siblings.l.?, node, nodeCount(siblings.l.?) - take_left, take_left, .front);
+                if (siblings.r != null and take_right > 0) try self.transferRangeBetweenSiblings(siblings.r.?, node, 0, take_right, .back);
             }
-            cur = node.parent;
         }
     }
 
@@ -662,12 +633,11 @@ pub const TextBuffer = struct {
         freeTree(self.alloc, child);
     }
 
-    fn mergeWithSibling(self: *TextBuffer, src: *Node, dst: *Node) error{OutOfMemory}!?*Node {
-        if (nodeCount(src) + nodeCount(dst) > nodeMax(dst)) return null;
+    fn mergeWithSibling(self: *TextBuffer, src: *Node, dst: *Node) error{OutOfMemory}!bool {
+        if (nodeCount(src) + nodeCount(dst) > nodeMax(dst)) return false;
         try self.transferRangeBetweenSiblings(src, dst, 0, nodeCount(src), .back);
-        const parent = src.parent.?;
-        self.infanticide(parent, src);
-        return parent;
+        self.infanticide(src.parent.?, src);
+        return true;
     }
 
     // -------------------- LINE COUNT HELPERS --------------------
@@ -691,9 +661,7 @@ pub const TextBuffer = struct {
         }
     }
 
-    const MoveResult = struct { bytes: usize, lines: usize };
-
-    fn countMovedPieces(self: *TextBuffer, to_move: []Piece) error{OutOfMemory}!MoveResult {
+    fn countMovedPieces(self: *TextBuffer, to_move: []Piece) error{OutOfMemory}!Delta {
         var moved_bytes: usize = 0;
         var moved_lines: usize = 0;
         for (to_move) |*piece| {
@@ -703,7 +671,7 @@ pub const TextBuffer = struct {
         return .{ .bytes = moved_bytes, .lines = moved_lines };
     }
 
-    fn countMovedNodes(to_move: []*Node) MoveResult {
+    fn countMovedNodes(to_move: []*Node) Delta {
         var moved_bytes: usize = 0;
         var moved_lines: usize = 0;
         for (to_move) |node| {
@@ -1009,7 +977,6 @@ fn getSiblings(child: *const Node) Siblings {
 }
 
 fn leftmostDescendant(node: *Node) *Node {
-    // find the leftmost descendant of any node
     var cur = node;
     while (!isLeaf(cur)) cur = childList(cur).items[0];
     return cur;
@@ -1120,56 +1087,22 @@ fn spliceIntoLeaf(pieces: *std.ArrayList(Piece), alloc: std.mem.Allocator, loc: 
     }
 }
 
-fn bubbleByteDelta(node: *Node, delta: usize, is_neg: bool) void {
-    // propagate a change in byte weight up the tree
+const Delta = struct { bytes: usize, lines: usize };
+
+fn bubbleDelta(node: *Node, delta: Delta, is_neg: bool) void {
+    // propagate a change in byte and line weights up the tree
     var cur: ?*Node = node;
-    while (cur) |n| {
+    while (cur) |n| : (cur = n.parent) {
         if (is_neg) {
-            debug.dassert(n.weight_bytes >= delta, "cannot give a node a negative byte weight");
-            n.weight_bytes -= delta;
+            debug.dassert(n.weight_bytes >= delta.bytes, "cannot give a node a negative byte weight");
+            debug.dassert(n.weight_bytes >= delta.lines, "cannot give a node a negative line weight");
+            n.weight_bytes -= delta.bytes;
+            n.weight_lines -= delta.lines;
         } else {
-            n.weight_bytes += delta;
+            n.weight_bytes += delta.bytes;
+            n.weight_lines += delta.lines;
         }
-        cur = n.parent;
     }
-}
-
-fn bubbleLineDelta(node: *Node, delta: usize, is_neg: bool) void {
-    var cur: ?*Node = node;
-    while (cur) |n| {
-        if (is_neg) {
-            debug.dassert(n.weight_lines >= delta, "cannot give a node a negative line weight");
-            n.weight_lines -= delta;
-        } else {
-            n.weight_lines += delta;
-        }
-        cur = n.parent;
-    }
-}
-
-const BorrowPlan = struct { take_left: usize, take_right: usize };
-
-fn planBorrow(node: *Node, siblings: Siblings) BorrowPlan {
-    // determines exactly how many children a node wants to borrow, and how many to take from each sibling
-    const count = nodeCount(node);
-    const min = nodeMin(node);
-    const max = nodeMax(node);
-    if (count >= min) return .{ .take_left = 0, .take_right = 0 };
-    const demand = min - count;
-    const capacity = max - count;
-    const left_spare = if (siblings.l) |l| spareNodes(l) else 0;
-    const right_spare = if (siblings.r) |r| spareNodes(r) else 0;
-    // merge on new boundaries after borrowing might delete up to one piece per borrow
-    var slack: usize = 0;
-    const is_leaf = isLeaf(node);
-    if (is_leaf and siblings.l != null) slack += 1;
-    if (is_leaf and siblings.r != null) slack += 1;
-    var total_want = @min(demand + slack, capacity);
-    // preferentially borrow from the right sibling, it's faster
-    const take_right = @min(total_want, right_spare);
-    total_want -= take_right;
-    const take_left = @min(total_want, left_spare);
-    return .{ .take_left = take_left, .take_right = take_right };
 }
 
 // -------------------- LAZY LINE INDEXING IMPLEMENTATION --------------------
