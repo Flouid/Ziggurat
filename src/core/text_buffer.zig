@@ -98,7 +98,11 @@ pub const TextBuffer = struct {
         bubbleByteDelta(leaf, text.len, false);
         bubbleLineDelta(leaf, newlines, false);
         self.doc_len += text.len;
-        if (!fast_path) try self.bubbleOverflowUp(leaf);
+        // if the number of pieces changed, there are cases where underflow AND overflow are possible
+        if (!fast_path) {
+            try self.repairUpward(leaf);
+            try self.bubbleOverflowUp(leaf);
+        }
         // given that the contract is inserts should always occur inside the scanned region, this should ALWAYS be true
         debug.dassert(at <= self.scanned_bytes, "insert outside of scanned region of buffer");
         self.scanned_bytes += text.len;
@@ -140,10 +144,9 @@ pub const TextBuffer = struct {
                 leaf = next_leaf.?;
             }
         }
-        // handle underflow when deleting reduces the number of pieces too much
-        try self.repairAfterDelete(left, leaf);
         self.doc_len -= span.len;
-        // it's possible deleting creates extra pieces, so handle overflow too
+        // deleting may remove pieces and cause underflow, or add pieces and cause overflow
+        try self.repairAfterDelete(left, leaf);
         try self.bubbleOverflowUp(leaf);
         // given that the contract is deletes should always occur inside the scanned region, this should ALWAYS be true
         debug.dassert(span.end() <= self.scanned_bytes, "delete outside of scanned region of buffer");
