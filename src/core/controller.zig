@@ -131,7 +131,7 @@ pub const Controller = struct {
                 self.mouse_pos = .{ .x = ev.*.mouse_x, .y = ev.*.mouse_y };
                 if (!self.mouse_held) return .noop;
                 const pos = try self.geom.mouseToTextPos(self.doc, self.vp, ev.*.mouse_x, ev.*.mouse_y) orelse return .noop;
-                const not_last_click_pos = pos.row != self.last_click_text_pos.row or pos.col != self.last_click_text_pos.row;
+                const not_last_click_pos = pos.row != self.last_click_text_pos.row or pos.col != self.last_click_text_pos.col;
                 if (!self.doc.hasSelection() and not_last_click_pos) self.doc.startSelection();
                 try self.doc.moveTo(pos);
             },
