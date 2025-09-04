@@ -98,16 +98,21 @@ pub const TextBuffer = struct {
         bubbleByteDelta(leaf, text.len, false);
         bubbleLineDelta(leaf, newlines, false);
         self.doc_len += text.len;
-        if (!fast_path) try self.bubbleOverflowUp(leaf);
+        // if the number of pieces changed, there are cases where underflow AND overflow are possible
+        if (!fast_path) {
+            try self.repairUpward(leaf);
+            try self.bubbleOverflowUp(leaf);
+        }
         // given that the contract is inserts should always occur inside the scanned region, this should ALWAYS be true
         debug.dassert(at <= self.scanned_bytes, "insert outside of scanned region of buffer");
         self.scanned_bytes += text.len;
-        if (self.scanned_bytes < self.doc_len) self.retargetFrontier();
+        self.retargetFrontier();
     }
 
     pub fn reset(self: *TextBuffer) error{OutOfMemory}!void {
         freeTree(self.alloc, self.root);
         self.root = try initLeaf(self.alloc);
+        self.doc_len = 0;
         self.scanned_bytes = 0;
         self.retargetFrontier();
     }
@@ -139,15 +144,14 @@ pub const TextBuffer = struct {
                 leaf = next_leaf.?;
             }
         }
-        // handle underflow when deleting reduces the number of pieces too much
-        try self.repairAfterDelete(left, leaf);
         self.doc_len -= span.len;
-        // it's possible deleting creates extra pieces, so handle overflow too
+        // deleting may remove pieces and cause underflow, or add pieces and cause overflow
+        try self.repairAfterDelete(left, leaf);
         try self.bubbleOverflowUp(leaf);
         // given that the contract is deletes should always occur inside the scanned region, this should ALWAYS be true
         debug.dassert(span.end() <= self.scanned_bytes, "delete outside of scanned region of buffer");
         self.scanned_bytes -= span.len;
-        if (self.scanned_bytes < self.doc_len) self.retargetFrontier();
+        self.retargetFrontier();
     }
 
     pub fn scanFrontierUntil(self: *TextBuffer, line: usize) error{OutOfMemory}!bool {
@@ -720,6 +724,13 @@ pub const TextBuffer = struct {
 
     fn retargetFrontier(self: *TextBuffer) void {
         debug.dassert(self.scanned_bytes <= self.doc_len, "scanned more bytes than exist in document");
+        // in the case of the full document already having been scanned, use a sentinel to the end of the last piece
+        if (self.scanned_bytes == self.doc_len) {
+            const leaf = rightmostDescendant(self.root);
+            const pieces = leafPiecesConst(leaf).items;
+            self.frontier = .{ .leaf = leaf, .piece_idx = pieces.len, .offset = 0 };
+            return;
+        }
         const found = findAt(self.root, self.scanned_bytes);
         const loc = locateInLeaf(found.leaf, found.offset);
         self.frontier = .{
@@ -1001,6 +1012,15 @@ fn leftmostDescendant(node: *Node) *Node {
     // find the leftmost descendant of any node
     var cur = node;
     while (!isLeaf(cur)) cur = childList(cur).items[0];
+    return cur;
+}
+
+fn rightmostDescendant(node: *Node) *Node {
+    var cur = node;
+    while (!isLeaf(cur)) {
+        const children = childList(cur).items;
+        cur = children[children.len - 1];
+    }
     return cur;
 }
 

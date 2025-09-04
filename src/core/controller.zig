@@ -4,6 +4,7 @@ const Document = @import("document").Document;
 const Viewport = @import("viewport").Viewport;
 const Geometry = @import("geometry").Geometry;
 const PixelPos = @import("types").PixelPos;
+const TextPos = @import("types").TextPos;
 
 const Y_SCROLL = 2;
 const X_SCROLL = 2;
@@ -25,7 +26,8 @@ pub const Controller = struct {
     mouse_held: bool = false,
     click_count: u8 = 0,
     last_click_ms: u64 = 0,
-    last_click_pos: PixelPos = .origin,
+    last_click_pixel_pos: PixelPos = .origin,
+    last_click_text_pos: TextPos = .origin,
     last_button: sapp.Mousebutton = .LEFT,
     mouse_pos: PixelPos = .origin,
 
@@ -99,7 +101,7 @@ pub const Controller = struct {
                 // determine if this is part of a sequence of clicks
                 const button_match = btn == self.last_button;
                 const fast_enough = now - self.last_click_ms <= double_click_ms;
-                const close_enough = Geometry.distanceSquared(self.last_click_pos.x, self.last_click_pos.y, x, y) <= click_slop_sq;
+                const close_enough = Geometry.distanceSquared(self.last_click_pixel_pos.x, self.last_click_pixel_pos.y, x, y) <= click_slop_sq;
                 const click_seq = button_match and fast_enough and close_enough;
                 // track internal state accordingly
                 if (click_seq) {
@@ -109,13 +111,14 @@ pub const Controller = struct {
                     self.last_button = btn;
                 }
                 self.last_click_ms = now;
-                self.last_click_pos = .{ .x = x, .y = y };
+                self.last_click_pixel_pos = .{ .x = x, .y = y };
+                const pos = try self.geom.mouseToTextPos(self.doc, self.vp, x, y) orelse return .noop;
+                self.last_click_text_pos = pos;
                 // handle each case
                 switch (self.click_count) {
                     1 => {
-                        const pos = try self.geom.mouseToTextPos(self.doc, self.vp, x, y) orelse return .noop;
                         try self.doc.moveTo(pos);
-                        self.doc.startSelection();
+                        self.doc.resetSelection();
                     },
                     2 => try self.doc.selectWord(),
                     3 => try self.doc.selectLine(),
@@ -128,6 +131,8 @@ pub const Controller = struct {
                 self.mouse_pos = .{ .x = ev.*.mouse_x, .y = ev.*.mouse_y };
                 if (!self.mouse_held) return .noop;
                 const pos = try self.geom.mouseToTextPos(self.doc, self.vp, ev.*.mouse_x, ev.*.mouse_y) orelse return .noop;
+                const not_last_click_pos = pos.row != self.last_click_text_pos.row or pos.col != self.last_click_text_pos.col;
+                if (!self.doc.hasSelection() and not_last_click_pos) self.doc.startSelection();
                 try self.doc.moveTo(pos);
             },
             .MOUSE_UP => {
@@ -202,8 +207,4 @@ fn moveWithModifiers(doc: *Document, modifiers: Modifiers, comptime move: fn (*D
     if (modifiers.shift and !doc.hasSelection()) doc.startSelection();
     const cancel_selection = doc.hasSelection() and !modifiers.shift;
     try move(doc, cancel_selection);
-    // there may have been an EMPTY selection and no shift prior to the move
-    // the end result is that nothing should be selected, but triggering cancel logic is also incorrect
-    // in this specific case, reset the selection after the move
-    if (doc.hasSelection() and !modifiers.shift) doc.resetSelection();
 }

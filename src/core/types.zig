@@ -2,6 +2,8 @@ pub const TextPos = struct {
     // a logical position in the document in characters
     row: usize,
     col: usize,
+
+    pub const origin: TextPos = .{ .row = 0, .col = 0 };
 };
 
 pub const ScreenPos = struct {
