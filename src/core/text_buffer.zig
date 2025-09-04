@@ -724,6 +724,13 @@ pub const TextBuffer = struct {
 
     fn retargetFrontier(self: *TextBuffer) void {
         debug.dassert(self.scanned_bytes <= self.doc_len, "scanned more bytes than exist in document");
+        // in the case of the full document already having been scanned, use a sentinel to the end of the last piece
+        if (self.scanned_bytes == self.doc_len) {
+            const leaf = rightmostDescendant(self.root);
+            const pieces = leafPiecesConst(leaf).items;
+            self.frontier = .{ .leaf = leaf, .piece_idx = pieces.len, .offset = 0 };
+            return;
+        }
         const found = findAt(self.root, self.scanned_bytes);
         const loc = locateInLeaf(found.leaf, found.offset);
         self.frontier = .{
@@ -1005,6 +1012,15 @@ fn leftmostDescendant(node: *Node) *Node {
     // find the leftmost descendant of any node
     var cur = node;
     while (!isLeaf(cur)) cur = childList(cur).items[0];
+    return cur;
+}
+
+fn rightmostDescendant(node: *Node) *Node {
+    var cur = node;
+    while (!isLeaf(cur)) {
+        const children = childList(cur).items;
+        cur = children[children.len - 1];
+    }
     return cur;
 }
 
