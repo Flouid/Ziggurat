@@ -71,7 +71,7 @@ pub const Controller = struct {
                         .D => return .exit,
                         .X => {
                             try self.copySelectionToClipboard();
-                            try self.doc.caretBackspace();
+                            try self.handleBackspace(modifiers);
                             return .refresh;
                         },
                         .C => {
@@ -80,7 +80,7 @@ pub const Controller = struct {
                         },
                         .V => {
                             const buf = try clipboard.read();
-                            try self.doc.caretInsert(buf);
+                            try self.handleTyping(buf, true);
                             return .refresh;
                         },
                         .A => {
@@ -109,7 +109,7 @@ pub const Controller = struct {
                     .END => try self.moveWithModifiers(modifiers, Document.moveEnd),
                     .BACKSPACE => try self.handleBackspace(modifiers),
                     .DELETE => try self.handleDelete(modifiers),
-                    .ENTER => try self.handleTyping("\n"),
+                    .ENTER => try self.handleTyping("\n", false),
                     .ESCAPE => {
                         if (self.doc.sel.active()) {
                             self.doc.sel.resetAnchor();
@@ -124,7 +124,7 @@ pub const Controller = struct {
                 if (modifiers.ctrl or modifiers.alt or modifiers.super) return .handled;
                 var buf: [4]u8 = undefined;
                 const len = try std.unicode.utf8Encode(@intCast(ev.*.char_code), &buf);
-                try self.handleTyping(buf[0..len]);
+                try self.handleTyping(buf[0..len], false);
             },
             .MOUSE_DOWN => {
                 // clicks end the current transaction
@@ -244,10 +244,11 @@ pub const Controller = struct {
         self.history.commit();
     }
 
-    fn handleTyping(self: *Controller, bytes: []const u8) !void {
+    fn handleTyping(self: *Controller, bytes: []const u8, is_paste: bool) !void {
         // end the current transaction on exit if it contains a newline and that policy is enabled
         defer if (BREAK_ON_NEWLINE and std.mem.indexOfScalar(u8, bytes, '\n') != null) self.history.commit();
-        try self.history.ensureTransaction(self.alloc, self.doc, .typing);
+        const origin: Origin = if (is_paste) .paste else .typing;
+        try self.history.ensureTransaction(self.alloc, self.doc, origin);
         // handle replace behavior, create a delete operation as part of the current transaction
         if (self.doc.sel.active()) {
             const span = self.doc.sel.span().?;
@@ -265,8 +266,7 @@ pub const Controller = struct {
 
     fn deleteSelection(self: *Controller) !void {
         // helper for deleting the current selection from the document and adding it to the current transaction
-        if (!self.doc.sel.active()) return;
-        const span = self.doc.sel.span().?;
+        const span = self.doc.sel.span() orelse return;
         const old = try self.buildSlice(span);
         defer self.alloc.free(old);
         try self.doc.caretBackspace();
@@ -339,7 +339,7 @@ const Edit = union(enum) {
     }
 };
 
-const Origin = enum { typing, backspace, delete, paste, command };
+const Origin = enum { typing, backspace, delete, paste };
 
 const HistoryEntry = struct {
     edits: std.ArrayList(Edit) = .empty,
@@ -386,6 +386,7 @@ const History = struct {
         if (!self.tx_open or !self.hasTail()) return false;
         const last = self.tail();
         if (last.origin != origin) return false;
+        if (last.origin == .paste) return false;
         if (now() - last.t_ms > COALESCE_WINDOW_MS) return false;
         return true;
     }
