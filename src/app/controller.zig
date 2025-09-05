@@ -21,6 +21,12 @@ const CLICK_SLOP_SQ: f32 = 36;
 const COALESCE_WINDOW_MS: u64 = std.time.ms_per_s;
 const BREAK_ON_NEWLINE: bool = true;
 
+fn now() u64 {
+    // one source of truth for the current timestamp.
+    // This WILL crash if the system's time is set before 1970...
+    return @intCast(std.time.milliTimestamp());
+}
+
 pub const Command = union(enum) {
     save,
     exit,
@@ -43,8 +49,6 @@ pub const Controller = struct {
     last_click_text_pos: TextPos = .origin,
     last_button: sapp.Mousebutton = .LEFT,
     mouse_pos: PixelPos = .origin,
-    // timing updates every event
-    now: u64 = 0,
 
     pub fn deinit(self: *Controller) void {
         self.history.deinit(self.alloc);
@@ -56,7 +60,6 @@ pub const Controller = struct {
         // then it will return that action as a command for the app to deal with.
         // If the event can be handled and does not change the visible state, return .handled.
         // If the event was handled but mutated visible state, trigger a refresh with .refresh.
-        self.now = @intCast(std.time.milliTimestamp());
         switch (ev.*.type) {
             .KEY_DOWN => {
                 const key = ev.*.key_code;
@@ -114,7 +117,7 @@ pub const Controller = struct {
                             try self.doc.deleteWordRight();
                         } else try self.doc.deleteForward();
                     },
-                    .ENTER => try self.doc.caretInsert("\n"),
+                    .ENTER => try self.handleTyping("\n"),
                     .ESCAPE => {
                         if (self.doc.sel.active()) {
                             self.doc.sel.resetAnchor();
@@ -129,7 +132,7 @@ pub const Controller = struct {
                 if (modifiers.ctrl or modifiers.alt or modifiers.super) return .handled;
                 var buf: [4]u8 = undefined;
                 const len = try std.unicode.utf8Encode(@intCast(ev.*.char_code), &buf);
-                try self.doc.caretInsert(buf[0..len]);
+                try self.handleTyping(buf[0..len]);
             },
             .MOUSE_DOWN => {
                 // clicks end the current transaction
@@ -140,7 +143,8 @@ pub const Controller = struct {
                 const btn = ev.*.mouse_button;
                 // determine if this is part of a sequence of clicks
                 const button_match = btn == self.last_button;
-                const fast_enough = self.now - self.last_click_ms <= DOUBLE_CLICK_MS;
+                const now_ms = now();
+                const fast_enough = now_ms - self.last_click_ms <= DOUBLE_CLICK_MS;
                 const close_enough = Geometry.distanceSquared(self.last_click_pixel_pos.x, self.last_click_pixel_pos.y, x, y) <= CLICK_SLOP_SQ;
                 const click_seq = button_match and fast_enough and close_enough;
                 // track internal state accordingly
@@ -150,7 +154,7 @@ pub const Controller = struct {
                     self.click_count = 1;
                     self.last_button = btn;
                 }
-                self.last_click_ms = self.now;
+                self.last_click_ms = now_ms;
                 self.last_click_pixel_pos = .{ .x = x, .y = y };
                 const pos = try self.geom.mouseToTextPos(self.doc, self.vp, x, y) orelse return .handled;
                 self.last_click_text_pos = pos;
@@ -248,7 +252,24 @@ pub const Controller = struct {
         self.history.commit();
     }
 
-    // TODO: write handleTyping function
+    fn handleTyping(self: *Controller, bytes: []const u8) !void {
+        // end the current transaction on exit if it contains a newline and that policy is enabled
+        defer if (BREAK_ON_NEWLINE and std.mem.indexOfScalar(u8, bytes, '\n') != null) self.history.commit();
+        try self.history.ensureTransaction(self.alloc, self.doc, .typing);
+        // handle replace behavior, create a delete operation as part of the current transaction
+        if (self.doc.sel.active()) {
+            const span = self.doc.sel.span().?;
+            const old = try self.buildSlice(span);
+            defer self.alloc.free(old);
+            // document can handle this implicitly, but doing it here updates the selection for snapshots
+            try self.doc.caretBackspace();
+            // the delete portion of the replace must be reversible, so it is logged as a seperate edit
+            try self.history.appendDelete(self.alloc, self.doc, span.start, old);
+        }
+        const at = self.doc.sel.caret.byte;
+        try self.doc.caretInsert(bytes);
+        try self.history.appendInsert(self.alloc, self.doc, at, bytes);
+    }
 };
 
 // -------------------- MODIFIERS --------------------
@@ -284,7 +305,7 @@ const Edit = union(enum) {
     }
 };
 
-const Origin = enum { Typing, Backspace, Delete, Paste, Command };
+const Origin = enum { typing, backspace, delete, paste, command };
 
 const HistoryEntry = struct {
     edits: std.ArrayList(Edit) = .empty,
@@ -296,6 +317,10 @@ const HistoryEntry = struct {
     fn deinit(self: *HistoryEntry, alloc: std.mem.Allocator) void {
         for (self.edits.items) |*edit| edit.deinit(alloc);
         self.edits.deinit(alloc);
+    }
+
+    fn lastEdit(self: *HistoryEntry) ?*Edit {
+        return if (self.edits.items.len == 0) null else &self.edits.items[self.edits.items.len - 1];
     }
 };
 
@@ -323,25 +348,75 @@ const History = struct {
         self.tx_open = false;
     }
 
-    fn shouldCoalesce(self: *History, origin: Origin, now: u64) bool {
+    fn shouldCoalesce(self: *History, origin: Origin) bool {
         if (!self.tx_open or !self.hasTail()) return false;
         const last = self.tail();
         if (last.origin != origin) return false;
-        if (now - last.t_ms > COALESCE_WINDOW_MS) return false;
+        if (now() - last.t_ms > COALESCE_WINDOW_MS) return false;
         return true;
     }
 
-    fn ensureTransaction(self: *History, alloc: std.mem.Allocator, doc: *Document, origin: Origin, now: u64) error{OutOfMemory}!void {
+    fn ensureTransaction(self: *History, alloc: std.mem.Allocator, doc: *Document, origin: Origin) error{OutOfMemory}!void {
         // ensures there is is an open transaction at the tail to edit
-        if (self.shouldCoalesce(origin, now)) return;
-        self.entries.shrinkRetainingCapacity(self.index);
+        if (self.shouldCoalesce(origin)) return;
+        while (self.entries.items.len > self.index) {
+            self.tail().deinit(alloc);
+            _ = self.entries.pop();
+        }
         try self.entries.append(alloc, .{
             .ante = doc.sel,
             .post = doc.sel,
             .origin = origin,
-            .t_ms = now,
+            .t_ms = now(),
         });
         self.index = self.entries.items.len;
         self.tx_open = true;
+    }
+
+    fn appendInsert(self: *History, alloc: std.mem.Allocator, doc: *Document, at: usize, bytes: []const u8) error{OutOfMemory}!void {
+        const entry = self.tail();
+        defer {
+            entry.post = doc.sel;
+            entry.t_ms = now();
+        }
+        // if the previous entry was also an insert, append onto it
+        if (entry.lastEdit()) |edit| switch (edit.*) {
+            .insert => |*i| {
+                if (i.at + i.text.items.len == at and entry.origin == .typing) {
+                    try i.text.appendSlice(alloc, bytes);
+                } else @panic("noncontiguous insert within the same transaction");
+                return;
+            },
+            else => {},
+        };
+        var buf: std.ArrayList(u8) = .empty;
+        try buf.appendSlice(alloc, bytes);
+        try entry.edits.append(alloc, .{ .insert = .{ .at = at, .text = buf } });
+    }
+
+    fn appendDelete(self: *History, alloc: std.mem.Allocator, doc: *Document, at: usize, bytes: []const u8) error{OutOfMemory}!void {
+        const entry = self.tail();
+        defer {
+            entry.post = doc.sel;
+            entry.t_ms = now();
+        }
+        // if the previous edit was also a delete, append onto it
+        if (entry.lastEdit()) |edit| switch (edit.*) {
+            .delete => |*d| {
+                if (at + bytes.len == d.at and entry.origin == .backspace) {
+                    // contiguity check for backspace, can append onto the previous edit
+                    try d.text.appendSlice(alloc, bytes);
+                    d.at = at;
+                } else if (d.at + d.text.items.len == at and entry.origin == .delete) {
+                    // contiguity check for delete, can also append onto the previous edit
+                    try d.text.appendSlice(alloc, bytes);
+                } else @panic("noncontiguous delete within the same transaction");
+                return;
+            },
+            else => {},
+        };
+        var buf: std.ArrayList(u8) = .empty;
+        try buf.appendSlice(alloc, bytes);
+        try entry.edits.append(alloc, .{ .delete = .{ .at = at, .text = buf } });
     }
 };
