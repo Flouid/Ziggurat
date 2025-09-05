@@ -108,11 +108,7 @@ pub const Controller = struct {
                     .HOME => try self.moveWithModifiers(modifiers, Document.moveHome),
                     .END => try self.moveWithModifiers(modifiers, Document.moveEnd),
                     .BACKSPACE => try self.handleBackspace(modifiers),
-                    .DELETE => {
-                        if (modifiers.ctrl) {
-                            try self.doc.deleteWordRight();
-                        } else try self.doc.deleteForward();
-                    },
+                    .DELETE => try self.handleDelete(modifiers),
                     .ENTER => try self.handleTyping("\n"),
                     .ESCAPE => {
                         if (self.doc.sel.active()) {
@@ -267,37 +263,46 @@ pub const Controller = struct {
         try self.history.appendInsert(self.alloc, self.doc, at, bytes);
     }
 
+    fn deleteSelection(self: *Controller) !void {
+        // helper for deleting the current selection from the document and adding it to the current transaction
+        if (!self.doc.sel.active()) return;
+        const span = self.doc.sel.span().?;
+        const old = try self.buildSlice(span);
+        defer self.alloc.free(old);
+        try self.doc.caretBackspace();
+        try self.history.appendDelete(self.alloc, self.doc, span.start, old);
+    }
+
     fn handleBackspace(self: *Controller, modifiers: Modifiers) !void {
         try self.history.ensureTransaction(self.alloc, self.doc, .backspace);
+        // on exit, delete whatever is selected and store it in the current transaction
+        // that means the only responsibility of the rest of this function is building a correct selection
+        defer self.deleteSelection() catch @panic("deletion failed inside handleBackspace!");
         // handle deleting a selection
-        if (self.doc.sel.active()) {
-            const span = self.doc.sel.span().?;
-            const old = try self.buildSlice(span);
-            defer self.alloc.free(old);
-            try self.doc.caretBackspace();
-            try self.history.appendDelete(self.alloc, self.doc, span.start, old);
-            return;
-        }
+        if (self.doc.sel.active()) return;
         // handle word-granular deletion when there is no selection
         if (modifiers.ctrl) {
             self.doc.sel.dropAnchor();
             try self.doc.moveWordLeft(false);
-            if (!self.doc.sel.active()) return;
-            const span = self.doc.sel.span().?;
-            const old = try self.buildSlice(span);
-            defer self.alloc.free(old);
-            try self.doc.caretBackspace();
-            try self.history.appendDelete(self.alloc, self.doc, span.start, old);
             return;
         }
-        // default case for unmodified single backspace
-        const at = self.doc.sel.caret.byte;
-        if (at == 0) return;
-        const span: Span = .{ .start = at - 1, .len = 1 };
-        const old = try self.buildSlice(span);
-        defer self.alloc.free(old);
-        try self.doc.caretBackspace();
-        try self.history.appendDelete(self.alloc, self.doc, at - 1, old);
+        // default case for unmodified single backspace, start a selection and move one left
+        self.doc.sel.dropAnchor();
+        try self.doc.moveLeft(false);
+    }
+
+    fn handleDelete(self: *Controller, modifiers: Modifiers) !void {
+        // this function is almost identical to backspace, read that for comments
+        try self.history.ensureTransaction(self.alloc, self.doc, .delete);
+        defer self.deleteSelection() catch @panic("deletion failed inside handleDelete!");
+        if (self.doc.sel.active()) return;
+        if (modifiers.ctrl) {
+            self.doc.sel.dropAnchor();
+            try self.doc.moveWordRight(false);
+            return;
+        }
+        self.doc.sel.dropAnchor();
+        try self.doc.moveRight(false);
     }
 };
 
@@ -436,7 +441,7 @@ const History = struct {
                     // contiguity check for backspace, can append onto the previous edit
                     try d.text.appendSlice(alloc, bytes);
                     d.at = at;
-                } else if (d.at + d.text.items.len == at and entry.origin == .delete) {
+                } else if (d.at == at and entry.origin == .delete) {
                     // contiguity check for delete, can also append onto the previous edit
                     try d.text.appendSlice(alloc, bytes);
                 } else @panic("noncontiguous delete within the same transaction");

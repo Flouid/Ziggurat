@@ -150,17 +150,6 @@ pub const Document = struct {
         self.sel.resetAnchor();
     }
 
-    pub fn deleteForward(self: *Document) error{OutOfMemory}!void {
-        try self.moveRight(false);
-        try self.caretBackspace();
-    }
-
-    pub fn deleteWordRight(self: *Document) error{OutOfMemory}!void {
-        self.sel.dropAnchor();
-        try self.moveWordRight(false);
-        try self.caretBackspace();
-    }
-
     // cursor traversal
 
     pub fn moveTo(self: *Document, pos: TextPos) error{OutOfMemory}!void {
