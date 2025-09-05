@@ -3,6 +3,7 @@ const sapp = @import("sokol").app;
 const clipboard = @import("clipboard");
 const Document = @import("document").Document;
 const Caret = @import("document").Caret;
+const Selection = @import("document").Selection;
 const Viewport = @import("viewport").Viewport;
 const Geometry = @import("geometry").Geometry;
 const PixelPos = @import("types").PixelPos;
@@ -25,6 +26,7 @@ pub const Controller = struct {
     doc: *Document,
     vp: *Viewport,
     geom: *Geometry,
+    history: History = .empty,
     alloc: std.mem.Allocator,
     // mouse click tracking
     mouse_held: bool = false,
@@ -34,9 +36,14 @@ pub const Controller = struct {
     last_click_text_pos: TextPos = .origin,
     last_button: sapp.Mousebutton = .LEFT,
     mouse_pos: PixelPos = .origin,
-
+    // timing updates every event
+    now: u64 = 0,
+    // double click policy
     const double_click_ms: u64 = 400;
     const click_slop_sq: f32 = 36;
+    // edit coalescing policy
+    const coalesce_window_ms: u64 = std.time.ms_per_s;
+    const break_on_newline: bool = true;
 
     pub fn onEvent(self: *Controller, ev: [*c]const sapp.Event) !Command {
         // this has a very specific contract which is important to understand.
@@ -44,6 +51,7 @@ pub const Controller = struct {
         // then it will return that action as a command for the app to deal with.
         // If the event can be handled and does not change the visible state, return .handled.
         // If the event was handled but mutated visible state, trigger a refresh with .refresh.
+        self.now = @intCast(std.time.milliTimestamp());
         switch (ev.*.type) {
             .KEY_DOWN => {
                 const key = ev.*.key_code;
@@ -78,19 +86,19 @@ pub const Controller = struct {
                 switch (key) {
                     .RIGHT => {
                         if (modifiers.ctrl) {
-                            try moveWithModifiers(self.doc, modifiers, Document.moveWordRight);
-                        } else try moveWithModifiers(self.doc, modifiers, Document.moveRight);
+                            try self.moveWithModifiers(modifiers, Document.moveWordRight);
+                        } else try self.moveWithModifiers(modifiers, Document.moveRight);
                     },
                     .LEFT => {
                         if (modifiers.ctrl) {
-                            try moveWithModifiers(self.doc, modifiers, Document.moveWordLeft);
-                        } else try moveWithModifiers(self.doc, modifiers, Document.moveLeft);
+                            try self.moveWithModifiers(modifiers, Document.moveWordLeft);
+                        } else try self.moveWithModifiers(modifiers, Document.moveLeft);
                     },
-                    .DOWN => try moveWithModifiers(self.doc, modifiers, Document.moveDown),
-                    .UP => try moveWithModifiers(self.doc, modifiers, Document.moveUp),
+                    .DOWN => try self.moveWithModifiers(modifiers, Document.moveDown),
+                    .UP => try self.moveWithModifiers(modifiers, Document.moveUp),
                     // TODO: fix home and end, on my machine the events are KP_1 and KP_7 with or without numlock
-                    .HOME => try moveWithModifiers(self.doc, modifiers, Document.moveHome),
-                    .END => try moveWithModifiers(self.doc, modifiers, Document.moveEnd),
+                    .HOME => try self.moveWithModifiers(modifiers, Document.moveHome),
+                    .END => try self.moveWithModifiers(modifiers, Document.moveEnd),
                     .BACKSPACE => {
                         if (modifiers.ctrl) {
                             try self.doc.deleteWordLeft();
@@ -123,10 +131,9 @@ pub const Controller = struct {
                 const x = ev.*.mouse_x;
                 const y = ev.*.mouse_y;
                 const btn = ev.*.mouse_button;
-                const now: u64 = @intCast(std.time.milliTimestamp());
                 // determine if this is part of a sequence of clicks
                 const button_match = btn == self.last_button;
-                const fast_enough = now - self.last_click_ms <= double_click_ms;
+                const fast_enough = self.now - self.last_click_ms <= double_click_ms;
                 const close_enough = Geometry.distanceSquared(self.last_click_pixel_pos.x, self.last_click_pixel_pos.y, x, y) <= click_slop_sq;
                 const click_seq = button_match and fast_enough and close_enough;
                 // track internal state accordingly
@@ -136,7 +143,7 @@ pub const Controller = struct {
                     self.click_count = 1;
                     self.last_button = btn;
                 }
-                self.last_click_ms = now;
+                self.last_click_ms = self.now;
                 self.last_click_pixel_pos = .{ .x = x, .y = y };
                 const pos = try self.geom.mouseToTextPos(self.doc, self.vp, x, y) orelse return .handled;
                 self.last_click_text_pos = pos;
@@ -225,7 +232,15 @@ pub const Controller = struct {
         defer self.alloc.free(slice);
         try clipboard.write(slice);
     }
+
+    fn moveWithModifiers(self: *Controller, modifiers: Modifiers, comptime move: fn (*Document, bool) error{OutOfMemory}!void) !void {
+        if (modifiers.shift and !self.doc.sel.active()) self.doc.sel.dropAnchor();
+        const cancel_selection = self.doc.sel.active() and !modifiers.shift;
+        try move(self.doc, cancel_selection);
+    }
 };
+
+// -------------------- MODIFIERS --------------------
 
 const Modifiers = packed struct {
     shift: bool,
@@ -244,24 +259,7 @@ fn modifiersOf(ev: [*c]const sapp.Event) Modifiers {
     };
 }
 
-fn moveWithModifiers(doc: *Document, modifiers: Modifiers, comptime move: fn (*Document, bool) error{OutOfMemory}!void) !void {
-    if (modifiers.shift and !doc.sel.active()) doc.sel.dropAnchor();
-    const cancel_selection = doc.sel.active() and !modifiers.shift;
-    try move(doc, cancel_selection);
-}
-
 // -------------------- HISTORY --------------------
-
-const Selection = struct {
-    anchor: Caret,
-    cursor: Caret,
-
-    fn span(self: *Selection) Span {
-        const a = if (self.anchor.byte <= self.cursor.byte) self.anchor else self.cursor;
-        const b = if (self.anchor.byte > self.cursor.byte) self.anchor else self.cursor;
-        return .{ .start = a.byte, .len = b.byte - a.byte };
-    }
-};
 
 const Edit = union(enum) {
     insert: struct { at: usize, text: []const u8 },
@@ -281,6 +279,7 @@ const HistoryEntry = struct {
 const History = struct {
     entries: std.ArrayList(HistoryEntry) = .empty,
     index: usize = 0,
+    tx_open: bool = false,
 
     const empty: History = .{};
 };
