@@ -1,4 +1,5 @@
 const std = @import("std");
+const debug = @import("debug");
 const sapp = @import("sokol").app;
 const clipboard = @import("clipboard");
 const Document = @import("document").Document;
@@ -72,6 +73,7 @@ pub const Controller = struct {
                         .X => {
                             try self.copySelectionToClipboard();
                             try self.handleBackspace(modifiers);
+                            self.jumpToCaret();
                             return .refresh;
                         },
                         .C => {
@@ -81,10 +83,16 @@ pub const Controller = struct {
                         .V => {
                             const buf = try clipboard.read();
                             try self.handleTyping(buf, true);
+                            self.jumpToCaret();
                             return .refresh;
                         },
                         .A => {
                             try self.doc.selectDocument();
+                            return .refresh;
+                        },
+                        .Z => {
+                            try self.handleUndo();
+                            self.jumpToCaret();
                             return .refresh;
                         },
                         else => {},
@@ -204,11 +212,15 @@ pub const Controller = struct {
             else => return .handled,
         }
         // unless skipped via early return, ensure the caret is visible
+        self.jumpToCaret();
+        return .refresh;
+    }
+
+    fn jumpToCaret(self: *Controller) void {
         const caret_pos = self.doc.sel.caret.pos;
         const n_lines = self.doc.lineCount();
         const n_cols = self.doc.lineLength();
         self.vp.ensureCaretVisible(caret_pos, n_lines, n_cols);
-        return .refresh;
     }
 
     pub fn autoScroll(self: *const Controller) !bool {
@@ -304,6 +316,40 @@ pub const Controller = struct {
         self.doc.sel.dropAnchor();
         try self.doc.moveRight(false);
     }
+
+    fn handleUndo(self: *Controller) !void {
+        const h = &self.history;
+        if (h.tx_open) h.commit();
+        if (h.index == 0) return;
+        // start from the previous entry
+        h.index -= 1;
+        const entry = &h.entries.items[h.index];
+        debug.dassert(entry.edits.items.len > 0, "cannot undo entry with no edits");
+        // rewind the document selection to the post-state of that snapshot
+        self.doc.sel = entry.post;
+        // reverse-iterate over the entries and perform the inverse operation of each
+        var i = entry.edits.items.len;
+        while (i > 0) : (i -= 1) {
+            const edit = entry.edits.items[i - 1];
+            // transient states of the caret positions are INVALID, but careful consideration shows
+            // that underflow under these specific scenarios is impossible. State healed on exit
+            switch (edit) {
+                .insert => |ins| {
+                    self.doc.sel.anchor = .{ .byte = ins.at, .pos = .origin };
+                    self.doc.sel.caret.byte = ins.at + ins.text.items.len;
+                    try self.doc.caretBackspace();
+                },
+                .delete => |del| {
+                    if (del.reverse) std.mem.reverse(u8, del.text.items);
+                    self.doc.sel.anchor = .{ .byte = del.at, .pos = .origin };
+                    self.doc.sel.caret.byte = del.at;
+                    try self.doc.caretInsert(del.text.items);
+                },
+            }
+        }
+        // at the end, the document's selection should be whatever it was at the beginning of that history entry
+        self.doc.sel = entry.ante;
+    }
 };
 
 // -------------------- MODIFIERS --------------------
@@ -329,7 +375,7 @@ fn modifiersOf(ev: [*c]const sapp.Event) Modifiers {
 
 const Edit = union(enum) {
     insert: struct { at: usize, text: std.ArrayList(u8) },
-    delete: struct { at: usize, text: std.ArrayList(u8) },
+    delete: struct { at: usize, text: std.ArrayList(u8), reverse: bool = false },
 
     fn deinit(self: *Edit, alloc: std.mem.Allocator) void {
         switch (self.*) {
@@ -442,6 +488,7 @@ const History = struct {
                     // contiguity check for backspace, can append onto the previous edit
                     try d.text.appendSlice(alloc, bytes);
                     d.at = at;
+                    d.reverse = true;
                 } else if (d.at == at and entry.origin == .delete) {
                     // contiguity check for delete, can also append onto the previous edit
                     try d.text.appendSlice(alloc, bytes);

@@ -165,6 +165,7 @@ fn addCoreModules(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std
             .{ .name = "geometry", .module = geom_mod },
             .{ .name = "types", .module = types_mod },
             .{ .name = "clipboard", .module = dep_clipboard.module("clipboard") },
+            .{ .name = "debug", .module = debug_mod },
         },
     });    
 
