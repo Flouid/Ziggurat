@@ -2,6 +2,7 @@ const std = @import("std");
 const sapp = @import("sokol").app;
 const clipboard = @import("clipboard");
 const Document = @import("document").Document;
+const Caret = @import("document").Caret;
 const Viewport = @import("viewport").Viewport;
 const Geometry = @import("geometry").Geometry;
 const PixelPos = @import("types").PixelPos;
@@ -102,8 +103,8 @@ pub const Controller = struct {
                     },
                     .ENTER => try self.doc.caretInsert("\n"),
                     .ESCAPE => {
-                        if (self.doc.hasSelection()) {
-                            self.doc.resetSelection();
+                        if (self.doc.sel.active()) {
+                            self.doc.sel.resetAnchor();
                             return .refresh;
                         } else return .handled;
                     },
@@ -143,7 +144,7 @@ pub const Controller = struct {
                 switch (self.click_count) {
                     1 => {
                         try self.doc.moveTo(pos);
-                        self.doc.resetSelection();
+                        self.doc.sel.resetAnchor();
                     },
                     2 => try self.doc.selectWord(),
                     3 => try self.doc.selectLine(),
@@ -157,7 +158,7 @@ pub const Controller = struct {
                 if (!self.mouse_held) return .handled;
                 const pos = try self.geom.mouseToTextPos(self.doc, self.vp, ev.*.mouse_x, ev.*.mouse_y) orelse return .handled;
                 const not_last_click_pos = pos.row != self.last_click_text_pos.row or pos.col != self.last_click_text_pos.col;
-                if (!self.doc.hasSelection() and not_last_click_pos) self.doc.startSelection();
+                if (!self.doc.sel.active() and not_last_click_pos) self.doc.sel.dropAnchor();
                 try self.doc.moveTo(pos);
             },
             .MOUSE_UP => {
@@ -193,7 +194,7 @@ pub const Controller = struct {
             else => return .handled,
         }
         // unless skipped via early return, ensure the caret is visible
-        const caret_pos = self.doc.caret.pos;
+        const caret_pos = self.doc.sel.caret.pos;
         const n_lines = self.doc.lineCount();
         const n_cols = self.doc.lineLength();
         self.vp.ensureCaretVisible(caret_pos, n_lines, n_cols);
@@ -201,10 +202,10 @@ pub const Controller = struct {
     }
 
     pub fn autoScroll(self: *const Controller) !bool {
-        if (!self.doc.hasSelection() or !self.mouse_held) return false;
+        if (!self.doc.sel.active() or !self.mouse_held) return false;
         const mouse_pos = try self.geom.mouseToTextPos(self.doc, self.vp, self.mouse_pos.x, self.mouse_pos.y) orelse return false;
         if (!self.vp.posNearEdge(mouse_pos, self.doc.lineCount(), self.doc.lineLength())) return false;
-        const caret_pos = self.doc.caret.pos;
+        const caret_pos = self.doc.sel.caret.pos;
         if (mouse_pos.row == caret_pos.row and mouse_pos.col == caret_pos.col) return false;
         try self.doc.moveTo(mouse_pos);
         return true;
@@ -219,7 +220,7 @@ pub const Controller = struct {
     }
 
     fn copySelectionToClipboard(self: *const Controller) !void {
-        const span = self.doc.selectionSpan() orelse return;
+        const span = self.doc.sel.span() orelse return;
         const slice = try self.buildSlice(span);
         defer self.alloc.free(slice);
         try clipboard.write(slice);
@@ -244,7 +245,42 @@ fn modifiersOf(ev: [*c]const sapp.Event) Modifiers {
 }
 
 fn moveWithModifiers(doc: *Document, modifiers: Modifiers, comptime move: fn (*Document, bool) error{OutOfMemory}!void) !void {
-    if (modifiers.shift and !doc.hasSelection()) doc.startSelection();
-    const cancel_selection = doc.hasSelection() and !modifiers.shift;
+    if (modifiers.shift and !doc.sel.active()) doc.sel.dropAnchor();
+    const cancel_selection = doc.sel.active() and !modifiers.shift;
     try move(doc, cancel_selection);
 }
+
+// -------------------- HISTORY --------------------
+
+const Selection = struct {
+    anchor: Caret,
+    cursor: Caret,
+
+    fn span(self: *Selection) Span {
+        const a = if (self.anchor.byte <= self.cursor.byte) self.anchor else self.cursor;
+        const b = if (self.anchor.byte > self.cursor.byte) self.anchor else self.cursor;
+        return .{ .start = a.byte, .len = b.byte - a.byte };
+    }
+};
+
+const Edit = union(enum) {
+    insert: struct { at: usize, text: []const u8 },
+    delete: struct { at: usize, text: []const u8 },
+};
+
+const Origin = enum { Typing, Backspace, Delete, Paste, Command };
+
+const HistoryEntry = struct {
+    edits: std.ArrayList(Edit) = .empty,
+    ante: Selection,
+    post: Selection,
+    origin: Origin,
+    t_ms: u64,
+};
+
+const History = struct {
+    entries: std.ArrayList(HistoryEntry) = .empty,
+    index: usize = 0,
+
+    const empty: History = .{};
+};

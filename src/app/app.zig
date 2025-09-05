@@ -112,7 +112,7 @@ const App = struct {
         const moved = try self.controller.autoScroll();
         if (!moved) return;
         self.dirty = true;
-        const caret_pos = self.doc.caret.pos;
+        const caret_pos = self.doc.sel.caret.pos;
         const n_lines = self.doc.lineCount();
         const n_cols = self.doc.lineLength();
         self.vp.ensureCaretVisible(caret_pos, n_lines, n_cols);
@@ -239,7 +239,7 @@ test "selecting empty line selects document" {
     defer app.deinit();
     try app.doc.moveTo(.{ .row = 4, .col = 0 });
     try app.doc.selectLine();
-    const selection = app.doc.selectionSpan();
+    const selection = app.doc.sel.span();
     try std.testing.expect(selection != null);
     try std.testing.expect(selection.?.start == 0);
     try std.testing.expect(selection.?.len == app.doc.size());
@@ -295,7 +295,7 @@ test "word selection and deletion works as expected" {
     defer app.deinit();
     try app.doc.moveTo(.{ .row = 0, .col = 6 });
     try app.doc.selectWord();
-    const selection = app.doc.selectionSpan();
+    const selection = app.doc.sel.span();
     try std.testing.expect(selection != null);
     try std.testing.expect(selection.?.start == 4);
     try std.testing.expect(selection.?.len == 5);
@@ -310,7 +310,7 @@ test "line selection and deletion works as expected" {
     defer app.deinit();
     try app.doc.moveTo(.{ .row = 0, .col = 6 });
     try app.doc.selectLine();
-    const selection = app.doc.selectionSpan();
+    const selection = app.doc.sel.span();
     try std.testing.expect(selection != null);
     try std.testing.expect(selection.?.start == 0);
     try std.testing.expect(selection.?.len == 43);
@@ -326,8 +326,8 @@ test "move up from selection works as expected" {
     try app.doc.moveTo(.{ .row = 16, .col = 3 });
     try app.doc.selectWord();
     try app.doc.moveUp(true);
-    try std.testing.expect(app.doc.caret.pos.row == 15);
-    try std.testing.expect(app.doc.caret.pos.col == 0);
+    try std.testing.expect(app.doc.sel.caret.pos.row == 15);
+    try std.testing.expect(app.doc.sel.caret.pos.col == 0);
 }
 
 test "move down from selection works as expected" {
@@ -337,8 +337,8 @@ test "move down from selection works as expected" {
     try app.doc.moveTo(.{ .row = 16, .col = 3 });
     try app.doc.selectWord();
     try app.doc.moveDown(true);
-    try std.testing.expect(app.doc.caret.pos.row == 17);
-    try std.testing.expect(app.doc.caret.pos.col == 7);
+    try std.testing.expect(app.doc.sel.caret.pos.row == 17);
+    try std.testing.expect(app.doc.sel.caret.pos.col == 7);
 }
 
 test "move left from selection works as expected" {
@@ -348,8 +348,8 @@ test "move left from selection works as expected" {
     try app.doc.moveTo(.{ .row = 16, .col = 3 });
     try app.doc.selectWord();
     try app.doc.moveLeft(true);
-    try std.testing.expect(app.doc.caret.pos.row == 16);
-    try std.testing.expect(app.doc.caret.pos.col == 0);
+    try std.testing.expect(app.doc.sel.caret.pos.row == 16);
+    try std.testing.expect(app.doc.sel.caret.pos.col == 0);
 }
 
 test "move right from selection works as expected" {
@@ -359,6 +359,6 @@ test "move right from selection works as expected" {
     try app.doc.moveTo(.{ .row = 16, .col = 3 });
     try app.doc.selectWord();
     try app.doc.moveRight(true);
-    try std.testing.expect(app.doc.caret.pos.row == 16);
-    try std.testing.expect(app.doc.caret.pos.col == 7);
+    try std.testing.expect(app.doc.sel.caret.pos.row == 16);
+    try std.testing.expect(app.doc.sel.caret.pos.col == 7);
 }
