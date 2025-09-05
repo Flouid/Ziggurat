@@ -1,6 +1,6 @@
 .{
     .name = .Ziggurat,
-    .version = "0.2.0",
+    .version = "0.3.0",
     .fingerprint = 0xa113aebd3ce7955c, // Changing this has security and trust implications.
     .minimum_zig_version = "0.15.1",
 
