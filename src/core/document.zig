@@ -361,7 +361,7 @@ pub const Document = struct {
 
     // NOTE: both of these functions carry an implicit assumption that bytes == columns
 
-    fn byteToPos(self: *Document, at: usize) error{OutOfMemory}!TextPos {
+    pub fn byteToPos(self: *Document, at: usize) error{OutOfMemory}!TextPos {
         debug.dassert(at <= self.size(), "index outside of document");
         // NOTE: this double traversal is technically unneccesary, but would require another big helper
         const line = try self.buffer.lineOfByte(at);

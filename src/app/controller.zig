@@ -95,6 +95,11 @@ pub const Controller = struct {
                             self.jumpToCaret();
                             return .refresh;
                         },
+                        .Y => {
+                            try self.handleRedo();
+                            self.jumpToCaret();
+                            return .refresh;
+                        },
                         else => {},
                     }
                 }
@@ -349,6 +354,33 @@ pub const Controller = struct {
         }
         // at the end, the document's selection should be whatever it was at the beginning of that history entry
         self.doc.sel = entry.ante;
+    }
+
+    fn handleRedo(self: *Controller) !void {
+        const h = &self.history;
+        if (h.tx_open) h.commit();
+        if (h.index == h.entries.items.len) return;
+        const entry = &h.entries.items[h.index];
+        debug.dassert(entry.edits.items.len > 0, "cannot undo entry with no edits");
+        self.doc.sel = entry.ante;
+        for (entry.edits.items) |edit| {
+            switch (edit) {
+                .insert => |ins| {
+                    self.doc.sel.anchor = .{ .byte = ins.at, .pos = .origin };
+                    self.doc.sel.caret.byte = ins.at;
+                    try self.doc.caretInsert(ins.text.items);
+                },
+                .delete => |del| {
+                    self.doc.sel.anchor = .{ .byte = del.at, .pos = .origin };
+                    self.doc.sel.caret.byte = del.at + del.text.items.len;
+                    // here, we need an actually correct position or we may underflow
+                    self.doc.sel.caret.pos = try self.doc.byteToPos(self.doc.sel.caret.byte);
+                    try self.doc.caretBackspace();
+                }
+            }
+        }
+        self.doc.sel = entry.post;
+        h.index += 1;
     }
 };
 
