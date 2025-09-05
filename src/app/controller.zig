@@ -10,9 +10,16 @@ const PixelPos = @import("types").PixelPos;
 const TextPos = @import("types").TextPos;
 const Span = @import("types").Span;
 
+// scrolling policy
 const Y_SCROLL = 2;
 const X_SCROLL = 2;
 const REVERSE_DIR = true;
+// double click policy
+const DOUBLE_CLICK_MS: u64 = 400;
+const CLICK_SLOP_SQ: f32 = 36;
+// edit coalescing policy
+const COALESCE_WINDOW_MS: u64 = std.time.ms_per_s;
+const BREAK_ON_NEWLINE: bool = true;
 
 pub const Command = union(enum) {
     save,
@@ -38,12 +45,10 @@ pub const Controller = struct {
     mouse_pos: PixelPos = .origin,
     // timing updates every event
     now: u64 = 0,
-    // double click policy
-    const double_click_ms: u64 = 400;
-    const click_slop_sq: f32 = 36;
-    // edit coalescing policy
-    const coalesce_window_ms: u64 = std.time.ms_per_s;
-    const break_on_newline: bool = true;
+
+    pub fn deinit(self: *Controller) void {
+        self.history.deinit(self.alloc);
+    }
 
     pub fn onEvent(self: *Controller, ev: [*c]const sapp.Event) !Command {
         // this has a very specific contract which is important to understand.
@@ -127,14 +132,16 @@ pub const Controller = struct {
                 try self.doc.caretInsert(buf[0..len]);
             },
             .MOUSE_DOWN => {
+                // clicks end the current transaction
+                self.history.commit();
                 self.mouse_held = true;
                 const x = ev.*.mouse_x;
                 const y = ev.*.mouse_y;
                 const btn = ev.*.mouse_button;
                 // determine if this is part of a sequence of clicks
                 const button_match = btn == self.last_button;
-                const fast_enough = self.now - self.last_click_ms <= double_click_ms;
-                const close_enough = Geometry.distanceSquared(self.last_click_pixel_pos.x, self.last_click_pixel_pos.y, x, y) <= click_slop_sq;
+                const fast_enough = self.now - self.last_click_ms <= DOUBLE_CLICK_MS;
+                const close_enough = Geometry.distanceSquared(self.last_click_pixel_pos.x, self.last_click_pixel_pos.y, x, y) <= CLICK_SLOP_SQ;
                 const click_seq = button_match and fast_enough and close_enough;
                 // track internal state accordingly
                 if (click_seq) {
@@ -237,7 +244,11 @@ pub const Controller = struct {
         if (modifiers.shift and !self.doc.sel.active()) self.doc.sel.dropAnchor();
         const cancel_selection = self.doc.sel.active() and !modifiers.shift;
         try move(self.doc, cancel_selection);
+        // end any open transactions in the history when navigating
+        self.history.commit();
     }
+
+    // TODO: write handleTyping function
 };
 
 // -------------------- MODIFIERS --------------------
@@ -262,8 +273,15 @@ fn modifiersOf(ev: [*c]const sapp.Event) Modifiers {
 // -------------------- HISTORY --------------------
 
 const Edit = union(enum) {
-    insert: struct { at: usize, text: []const u8 },
-    delete: struct { at: usize, text: []const u8 },
+    insert: struct { at: usize, text: std.ArrayList(u8) },
+    delete: struct { at: usize, text: std.ArrayList(u8) },
+
+    fn deinit(self: *Edit, alloc: std.mem.Allocator) void {
+        switch (self.*) {
+            .insert => |*i| i.text.deinit(alloc),
+            .delete => |*d| d.text.deinit(alloc),
+        }
+    }
 };
 
 const Origin = enum { Typing, Backspace, Delete, Paste, Command };
@@ -274,6 +292,11 @@ const HistoryEntry = struct {
     post: Selection,
     origin: Origin,
     t_ms: u64,
+
+    fn deinit(self: *HistoryEntry, alloc: std.mem.Allocator) void {
+        for (self.edits.items) |*edit| edit.deinit(alloc);
+        self.edits.deinit(alloc);
+    }
 };
 
 const History = struct {
@@ -282,4 +305,43 @@ const History = struct {
     tx_open: bool = false,
 
     const empty: History = .{};
+
+    fn deinit(self: *History, alloc: std.mem.Allocator) void {
+        for (self.entries.items) |*entry| entry.deinit(alloc);
+        self.entries.deinit(alloc);
+    }
+
+    fn hasTail(self: *const History) bool {
+        return self.entries.items.len > 0;
+    }
+
+    fn tail(self: *History) *HistoryEntry {
+        return &self.entries.items[self.entries.items.len - 1];
+    }
+
+    fn commit(self: *History) void {
+        self.tx_open = false;
+    }
+
+    fn shouldCoalesce(self: *History, origin: Origin, now: u64) bool {
+        if (!self.tx_open or !self.hasTail()) return false;
+        const last = self.tail();
+        if (last.origin != origin) return false;
+        if (now - last.t_ms > COALESCE_WINDOW_MS) return false;
+        return true;
+    }
+
+    fn ensureTransaction(self: *History, alloc: std.mem.Allocator, doc: *Document, origin: Origin, now: u64) error{OutOfMemory}!void {
+        // ensures there is is an open transaction at the tail to edit
+        if (self.shouldCoalesce(origin, now)) return;
+        self.entries.shrinkRetainingCapacity(self.index);
+        try self.entries.append(alloc, .{
+            .ante = doc.sel,
+            .post = doc.sel,
+            .origin = origin,
+            .t_ms = now,
+        });
+        self.index = self.entries.items.len;
+        self.tx_open = true;
+    }
 };

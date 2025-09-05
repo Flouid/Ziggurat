@@ -57,6 +57,7 @@ const App = struct {
 
     fn deinit(self: *App) void {
         if (!self.headless) self.renderer.deinit();
+        self.controller.deinit();
         self.doc.deinit();
         self.arena.deinit();
         _ = self.gpa.deinit();
