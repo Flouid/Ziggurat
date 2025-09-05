@@ -28,6 +28,6 @@ pub const Layout = struct {
             const col_count = @min(vp.dims.w, remaining_cols);
             lines[i] = .{ .start = full_line.start + col_start, .len = col_count };
         }
-        return .{ .first_row = vp.top_line, .width = vp.dims.w, .lines = lines, .caret = Geometry.textPosToScreenPos(doc.caret.pos, vp) };
+        return .{ .first_row = vp.top_line, .width = vp.dims.w, .lines = lines, .caret = Geometry.textPosToScreenPos(doc.sel.caret.pos, vp) };
     }
 };

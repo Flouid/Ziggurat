@@ -23,6 +23,7 @@ Two programs:
     - Opens are O(1)
     - The full file is never loaded into RAM even on save. Reads and writes are streamed directly to/from disk.
 - Supports all standard mouse + keyboard navigation
+- Infinite undo/redo supported
 - Supports most word and line granular selection and navigation with similar semantics to VSCode
 - If launched with no command-line args, it opens an empty unsavable scratch document
 - If launched via CLI with `Ziggurat.exe <file_path>` it will open that text file for editing or create one
@@ -32,7 +33,6 @@ Two programs:
 
 Each of these is being addressed on the way to v1. 
 
-- No undo/redo
 - No file renaming
 - No scaling or font support
 - No text wrapping

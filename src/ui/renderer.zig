@@ -119,7 +119,7 @@ pub const Renderer = struct {
         sdtx.draw();
         // draw a highlight around the selection if it exists
         var draw_sgl = false;
-        if (doc.hasSelection()) {
+        if (doc.sel.active()) {
             draw_sgl = true;
             var it = SelectionIter.init(doc, layout, &self.geom, dims);
             drawQuads(self.highlight, &it);
@@ -205,15 +205,15 @@ const SelectionIter = struct {
     layout: *const Layout,
     geom: *const Geometry,
     dims: PixelDims,
-    selection: ?Span,
+    span: ?Span,
     i: usize = 0,
 
     fn init(doc: *const Document, layout: *const Layout, geom: *const Geometry, dims: PixelDims) SelectionIter {
-        return .{ .doc = doc, .layout = layout, .geom = geom, .dims = dims, .selection = doc.selectionSpan() };
+        return .{ .doc = doc, .layout = layout, .geom = geom, .dims = dims, .span = doc.sel.span() };
     }
 
     fn next(self: *SelectionIter) ?ClipRect {
-        const s_opt = self.selection;
+        const s_opt = self.span;
         if (s_opt == null) return null;
         const sel = s_opt.?;
         // loop so lines with nothing visible can be skipped

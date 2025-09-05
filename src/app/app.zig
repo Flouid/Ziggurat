@@ -1,7 +1,6 @@
 const std = @import("std");
 const sapp = @import("sokol").app;
 const file_io = @import("file_io");
-const clipboard = @import("clipboard");
 const Document = @import("document").Document;
 const Viewport = @import("viewport").Viewport;
 const Layout = @import("layout").Layout;
@@ -40,7 +39,7 @@ const App = struct {
         self.mmap = try file_io.MappedFile.initFromPath(self.path_in);
         self.doc = try Document.init(gpa, self.mmap.bytes);
         self.vp = .{ .top_line = 0, .left_col = 0, .dims = self.getScreenDims() };
-        self.controller = .{ .doc = &self.doc, .vp = &self.vp, .geom = &self.geom };
+        self.controller = .{ .doc = &self.doc, .vp = &self.vp, .geom = &self.geom, .alloc = gpa };
         self.arena = std.heap.ArenaAllocator.init(gpa);
         try self.refreshLayout();
         self.last_tick_ns = @intCast(std.time.nanoTimestamp());
@@ -58,6 +57,7 @@ const App = struct {
 
     fn deinit(self: *App) void {
         if (!self.headless) self.renderer.deinit();
+        self.controller.deinit();
         self.doc.deinit();
         self.arena.deinit();
         _ = self.gpa.deinit();
@@ -113,7 +113,7 @@ const App = struct {
         const moved = try self.controller.autoScroll();
         if (!moved) return;
         self.dirty = true;
-        const caret_pos = self.doc.caret.pos;
+        const caret_pos = self.doc.sel.caret.pos;
         const n_lines = self.doc.lineCount();
         const n_cols = self.doc.lineLength();
         self.vp.ensureCaretVisible(caret_pos, n_lines, n_cols);
@@ -128,17 +128,6 @@ const App = struct {
         if (sapp.isvalid()) {
             return self.geom.pixelDimsToScreenDims(.{ .w = @floatFromInt(sapp.width()), .h = @floatFromInt(sapp.height()) });
         } else return self.geom.pixelDimsToScreenDims(.{ .w = 1024.0, .h = 768.0 });
-    }
-
-    fn copySelectionToClipboard(self: *App) !void {
-        const a = self.gpa.allocator();
-        const span = self.doc.selectionSpan() orelse return;
-        const buf = try a.alloc(u8, span.len);
-        defer a.free(buf);
-        var w: std.Io.Writer = .fixed(buf);
-        try self.doc.materializeRange(&w, span);
-        try w.flush();
-        try clipboard.write(buf);
     }
 };
 
@@ -177,17 +166,8 @@ fn event_cb(ev: [*c]const sapp.Event) callconv(.c) void {
             std.log.err("failed to save document: {t}\n", .{e});
         },
         .exit => sapp.requestQuit(),
-        .cut => {
-            G.copySelectionToClipboard() catch unreachable;
-            G.doc.caretBackspace() catch unreachable;
-        },
-        .copy => G.copySelectionToClipboard() catch unreachable,
-        .paste => {
-            const buf = clipboard.read() catch unreachable;
-            G.doc.caretInsert(buf) catch unreachable;
-        },
         .resize => G.vp.resize(G.getScreenDims()),
-        .noop => return,
+        .handled => return,
         else => {},
     }
     // if here, the command was NOT a noop, refresh the cached layout on next frame
@@ -260,7 +240,7 @@ test "selecting empty line selects document" {
     defer app.deinit();
     try app.doc.moveTo(.{ .row = 4, .col = 0 });
     try app.doc.selectLine();
-    const selection = app.doc.selectionSpan();
+    const selection = app.doc.sel.span();
     try std.testing.expect(selection != null);
     try std.testing.expect(selection.?.start == 0);
     try std.testing.expect(selection.?.len == app.doc.size());
@@ -316,7 +296,7 @@ test "word selection and deletion works as expected" {
     defer app.deinit();
     try app.doc.moveTo(.{ .row = 0, .col = 6 });
     try app.doc.selectWord();
-    const selection = app.doc.selectionSpan();
+    const selection = app.doc.sel.span();
     try std.testing.expect(selection != null);
     try std.testing.expect(selection.?.start == 4);
     try std.testing.expect(selection.?.len == 5);
@@ -331,7 +311,7 @@ test "line selection and deletion works as expected" {
     defer app.deinit();
     try app.doc.moveTo(.{ .row = 0, .col = 6 });
     try app.doc.selectLine();
-    const selection = app.doc.selectionSpan();
+    const selection = app.doc.sel.span();
     try std.testing.expect(selection != null);
     try std.testing.expect(selection.?.start == 0);
     try std.testing.expect(selection.?.len == 43);
@@ -347,8 +327,8 @@ test "move up from selection works as expected" {
     try app.doc.moveTo(.{ .row = 16, .col = 3 });
     try app.doc.selectWord();
     try app.doc.moveUp(true);
-    try std.testing.expect(app.doc.caret.pos.row == 15);
-    try std.testing.expect(app.doc.caret.pos.col == 0);
+    try std.testing.expect(app.doc.sel.caret.pos.row == 15);
+    try std.testing.expect(app.doc.sel.caret.pos.col == 0);
 }
 
 test "move down from selection works as expected" {
@@ -358,8 +338,8 @@ test "move down from selection works as expected" {
     try app.doc.moveTo(.{ .row = 16, .col = 3 });
     try app.doc.selectWord();
     try app.doc.moveDown(true);
-    try std.testing.expect(app.doc.caret.pos.row == 17);
-    try std.testing.expect(app.doc.caret.pos.col == 7);
+    try std.testing.expect(app.doc.sel.caret.pos.row == 17);
+    try std.testing.expect(app.doc.sel.caret.pos.col == 7);
 }
 
 test "move left from selection works as expected" {
@@ -369,8 +349,8 @@ test "move left from selection works as expected" {
     try app.doc.moveTo(.{ .row = 16, .col = 3 });
     try app.doc.selectWord();
     try app.doc.moveLeft(true);
-    try std.testing.expect(app.doc.caret.pos.row == 16);
-    try std.testing.expect(app.doc.caret.pos.col == 0);
+    try std.testing.expect(app.doc.sel.caret.pos.row == 16);
+    try std.testing.expect(app.doc.sel.caret.pos.col == 0);
 }
 
 test "move right from selection works as expected" {
@@ -380,6 +360,6 @@ test "move right from selection works as expected" {
     try app.doc.moveTo(.{ .row = 16, .col = 3 });
     try app.doc.selectWord();
     try app.doc.moveRight(true);
-    try std.testing.expect(app.doc.caret.pos.row == 16);
-    try std.testing.expect(app.doc.caret.pos.col == 7);
+    try std.testing.expect(app.doc.sel.caret.pos.row == 16);
+    try std.testing.expect(app.doc.sel.caret.pos.col == 7);
 }
