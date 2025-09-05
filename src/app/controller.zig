@@ -107,11 +107,7 @@ pub const Controller = struct {
                     // TODO: fix home and end, on my machine the events are KP_1 and KP_7 with or without numlock
                     .HOME => try self.moveWithModifiers(modifiers, Document.moveHome),
                     .END => try self.moveWithModifiers(modifiers, Document.moveEnd),
-                    .BACKSPACE => {
-                        if (modifiers.ctrl) {
-                            try self.doc.deleteWordLeft();
-                        } else try self.doc.caretBackspace();
-                    },
+                    .BACKSPACE => try self.handleBackspace(modifiers),
                     .DELETE => {
                         if (modifiers.ctrl) {
                             try self.doc.deleteWordRight();
@@ -269,6 +265,39 @@ pub const Controller = struct {
         const at = self.doc.sel.caret.byte;
         try self.doc.caretInsert(bytes);
         try self.history.appendInsert(self.alloc, self.doc, at, bytes);
+    }
+
+    fn handleBackspace(self: *Controller, modifiers: Modifiers) !void {
+        try self.history.ensureTransaction(self.alloc, self.doc, .backspace);
+        // handle deleting a selection
+        if (self.doc.sel.active()) {
+            const span = self.doc.sel.span().?;
+            const old = try self.buildSlice(span);
+            defer self.alloc.free(old);
+            try self.doc.caretBackspace();
+            try self.history.appendDelete(self.alloc, self.doc, span.start, old);
+            return;
+        }
+        // handle word-granular deletion when there is no selection
+        if (modifiers.ctrl) {
+            self.doc.sel.dropAnchor();
+            try self.doc.moveWordLeft(false);
+            if (!self.doc.sel.active()) return;
+            const span = self.doc.sel.span().?;
+            const old = try self.buildSlice(span);
+            defer self.alloc.free(old);
+            try self.doc.caretBackspace();
+            try self.history.appendDelete(self.alloc, self.doc, span.start, old);
+            return;
+        }
+        // default case for unmodified single backspace
+        const at = self.doc.sel.caret.byte;
+        if (at == 0) return;
+        const span: Span = .{ .start = at - 1, .len = 1 };
+        const old = try self.buildSlice(span);
+        defer self.alloc.free(old);
+        try self.doc.caretBackspace();
+        try self.history.appendDelete(self.alloc, self.doc, at - 1, old);
     }
 };
 

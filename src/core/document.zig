@@ -155,12 +155,6 @@ pub const Document = struct {
         try self.caretBackspace();
     }
 
-    pub fn deleteWordLeft(self: *Document) error{OutOfMemory}!void {
-        self.sel.dropAnchor();
-        try self.moveWordLeft(false);
-        try self.caretBackspace();
-    }
-
     pub fn deleteWordRight(self: *Document) error{OutOfMemory}!void {
         self.sel.dropAnchor();
         try self.moveWordRight(false);
